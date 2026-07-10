@@ -21,16 +21,19 @@ local autopilotArmed = false
 
 local function allThrustersOff()
   for _, side in pairs(thrusterSides) do
-    redstone.setOutput(side, false)
+    redstone.setAnalogOutput(side, 0)
   end
 end
 
-local function applyThrusters(state)
-  redstone.setOutput(thrusterSides.forward, state.forward or false)
-  redstone.setOutput(thrusterSides.reverse, state.reverse or false)
-  redstone.setOutput(thrusterSides.left, state.left or false)
-  redstone.setOutput(thrusterSides.right, state.right or false)
-  redstone.setOutput(thrusterSides.lift, state.lift or false)
+local function applyThrusters(state, levels)
+  local function output(control)
+    return state[control] and (levels[control] or 1) or 0
+  end
+  redstone.setAnalogOutput(thrusterSides.forward, output("forward"))
+  redstone.setAnalogOutput(thrusterSides.reverse, output("reverse"))
+  redstone.setAnalogOutput(thrusterSides.left, output("left"))
+  redstone.setAnalogOutput(thrusterSides.right, output("right"))
+  redstone.setAnalogOutput(thrusterSides.lift, output("lift"))
 end
 
 local function clear(target)
@@ -267,6 +270,15 @@ local function steeringPulse(angle)
   return 0.20
 end
 
+local function steeringStrength(angle)
+  angle = math.abs(angle)
+  if angle <= 12 then return 2 end
+  if angle <= 30 then return 3 end
+  if angle <= 60 then return 4 end
+  if angle <= 100 then return 5 end
+  return 6
+end
+
 local function approachSpeed(distance)
   if distance > 180 then return 18 end
   if distance > 90 then return 12 end
@@ -283,6 +295,14 @@ local function forwardPulse(distance)
   return 0.06
 end
 
+local function forwardStrength(distance)
+  if distance > 180 then return 9 end
+  if distance > 90 then return 7 end
+  if distance > 45 then return 5 end
+  if distance > 20 then return 4 end
+  return 2
+end
+
 local function computeThrusters(relative, distance, heightDifference, speed, verticalSpeed)
   local state = {
     forward = false,
@@ -292,57 +312,74 @@ local function computeThrusters(relative, distance, heightDifference, speed, ver
     lift = false
   }
   local pulses = {}
+  local levels = { forward = 0, reverse = 0, left = 0, right = 0, lift = 0 }
 
-  if not autopilotArmed then return state, pulses, 0 end
+  if not autopilotArmed then return state, pulses, 0, levels end
 
   local desiredSpeed = approachSpeed(distance)
 
   if distance <= arrivalDistance then
     state.reverse = speed > 0.5
-    if state.reverse then pulses.reverse = 0.10 end
-    return state, pulses, 0
+    if state.reverse then
+      pulses.reverse = 0.10
+      levels.reverse = 4
+    end
+    return state, pulses, 0, levels
   end
 
   state.left = relative < -turnDeadzone
   state.right = relative > turnDeadzone
-  if state.left then pulses.left = steeringPulse(relative) end
-  if state.right then pulses.right = steeringPulse(relative) end
+  if state.left then
+    pulses.left = steeringPulse(relative)
+    levels.left = steeringStrength(relative)
+  end
+  if state.right then
+    pulses.right = steeringPulse(relative)
+    levels.right = steeringStrength(relative)
+  end
 
   local aligned = math.abs(relative) <= throttleAngle
   state.forward = aligned and speed < desiredSpeed
-  if state.forward then pulses.forward = forwardPulse(distance) end
+  if state.forward then
+    pulses.forward = forwardPulse(distance)
+    levels.forward = forwardStrength(distance)
+  end
 
   state.reverse = speed > desiredSpeed + 2
   if state.reverse then
     state.forward = false
     pulses.reverse = distance < 45 and 0.12 or 0.08
+    levels.reverse = distance < 45 and 4 or 6
   end
 
   if heightDifference > verticalDeadzone then
     state.lift = true
     pulses.lift = heightDifference > 8 and 0.16 or 0.10
+    levels.lift = heightDifference > 8 and 7 or 5
   elseif heightDifference >= -1.5 and verticalSpeed < -0.10 then
     state.lift = true
     pulses.lift = maintenanceLiftPulse
+    levels.lift = 3
   elseif heightDifference >= -0.5 then
     -- Tiny periodic pulse to counter the hover bike's passive sink rate.
     state.lift = true
     pulses.lift = maintenanceLiftPulse
+    levels.lift = 3
   end
 
-  return state, pulses, desiredSpeed
+  return state, pulses, desiredSpeed, levels
 end
 
-local function stateText(state)
-  local function mark(active, label)
-    return active and label or "-"
+local function stateText(state, levels)
+  local function mark(control, label)
+    return state[control] and (label .. tostring(levels[control] or 0)) or "-"
   end
   return table.concat({
-    mark(state.forward, "FWD"),
-    mark(state.reverse, "REV"),
-    mark(state.left, "LEFT"),
-    mark(state.right, "RIGHT"),
-    mark(state.lift, "LIFT")
+    mark("forward", "F"),
+    mark("reverse", "B"),
+    mark("left", "L"),
+    mark("right", "R"),
+    mark("lift", "U")
   }, " ")
 end
 
@@ -385,7 +422,7 @@ end
 
 local function drawDashboard(display, driver, target, destinationName,
   velocity, heading, relative, distance, heightDifference, trackerError,
-  thrusters, desiredSpeed)
+  thrusters, desiredSpeed, levels)
   clear(display)
   local width, height = display.getSize()
   local color = directionColor(relative)
@@ -407,7 +444,7 @@ local function drawDashboard(display, driver, target, destinationName,
 
   safeWrite(display, 1, 8, ("DISTANCE  %.0f blocks"):format(distance), colors.yellow, colors.black)
   safeWrite(display, 1, 9, ("ALTITUDE  %+.0f blocks"):format(heightDifference), colors.lightBlue, colors.black)
-  safeWrite(display, 1, 10, "THR: " .. stateText(thrusters), colors.white, colors.black)
+  safeWrite(display, 1, 10, "THR: " .. stateText(thrusters, levels), colors.white, colors.black)
   safeWrite(display, math.max(1, width - 18), 6,
     ("TARGET %4.1f b/s"):format(desiredSpeed or 0), colors.gray, colors.black)
 
@@ -456,6 +493,7 @@ while true do
   }
   local pulses = {}
   local desiredSpeed = 0
+  local levels = { forward = 0, reverse = 0, left = 0, right = 0, lift = 0 }
 
   if driver and target then
     local elapsed = previousTime and (now - previousTime) or nil
@@ -485,13 +523,13 @@ while true do
       controlHeightDifference = routeAltitude - driver.y
     end
     if not trackerError then
-      thrusters, pulses, desiredSpeed =
+      thrusters, pulses, desiredSpeed, levels =
         computeThrusters(relative, distance, controlHeightDifference, speed, verticalSpeed)
     end
-    applyThrusters(thrusters)
+    applyThrusters(thrusters, levels)
 
     drawDashboard(display, driver, target, destinationName, velocity,
-      lastHeading, relative, distance, dy, trackerError, thrusters, desiredSpeed)
+      lastHeading, relative, distance, dy, trackerError, thrusters, desiredSpeed, levels)
 
     previousPosition = { x = driver.x, y = driver.y, z = driver.z }
     previousTime = now
@@ -518,7 +556,7 @@ while true do
     local event, value = os.pullEvent()
     if event == "timer" then
       if pulseTimers[value] then
-        redstone.setOutput(pulseTimers[value], false)
+        redstone.setAnalogOutput(pulseTimers[value], 0)
         pulseTimers[value] = nil
       elseif value == timer then
         break
