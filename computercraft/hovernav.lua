@@ -1,6 +1,37 @@
 local trackerUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
 local waypointFile = ".hovernav_waypoints"
 local refreshRate = 1
+local arrivalDistance = 8
+local turnDeadzone = 8
+local throttleAngle = 65
+local reverseAngle = 150
+local verticalDeadzone = 3
+
+-- Thruster wiring. The top side is intentionally never used by redstone.
+local thrusterSides = {
+  forward = "back",
+  reverse = "front",
+  -- Steering is crossed: the right thruster turns left and vice versa.
+  left = "right",
+  right = "left",
+  lift = "bottom"
+}
+
+local autopilotArmed = false
+
+local function allThrustersOff()
+  for _, side in pairs(thrusterSides) do
+    redstone.setOutput(side, false)
+  end
+end
+
+local function applyThrusters(state)
+  redstone.setOutput(thrusterSides.forward, state.forward or false)
+  redstone.setOutput(thrusterSides.reverse, state.reverse or false)
+  redstone.setOutput(thrusterSides.left, state.left or false)
+  redstone.setOutput(thrusterSides.right, state.right or false)
+  redstone.setOutput(thrusterSides.lift, state.lift or false)
+end
 
 local function clear(target)
   target.setBackgroundColor(colors.black)
@@ -71,7 +102,7 @@ local function fetchPlayers()
   response.close()
   local parsedOk, data = pcall(textutils.unserializeJSON, body)
   if not parsedOk or type(data) ~= "table" or type(data.players) ~= "table" then
-    return nil, "Ungueltige Tracker-Antwort"
+    return nil, "Invalid tracker response"
   end
   return data.players
 end
@@ -85,7 +116,8 @@ local function findPlayer(players, wanted)
         name = player.name,
         x = tonumber(player.position.x),
         y = tonumber(player.position.y),
-        z = tonumber(player.position.z)
+        z = tonumber(player.position.z),
+        yaw = player.rotation and tonumber(player.rotation.yaw) or nil
       }
     end
   end
@@ -98,7 +130,7 @@ local function printOnlinePlayers(players)
   end
   table.sort(names)
   if #names == 0 then
-    print("Keine Spieler vom Tracker empfangen.")
+    print("No players received from tracker.")
   else
     print("Online: " .. table.concat(names, ", "))
   end
@@ -109,7 +141,7 @@ local function readNumber(label)
     write(label)
     local value = tonumber(read())
     if value then return value end
-    print("Bitte eine Zahl eingeben.")
+    print("Please enter a number.")
   end
 end
 
@@ -117,32 +149,32 @@ local function configure()
   clear(term)
   print("AERO HOVERNAV // SETUP")
   print("======================")
-  write("Fahrername: ")
+  write("Driver name: ")
   local driverName = read()
 
-  write("Lade BlueMap-Daten... ")
+  write("Loading BlueMap data... ")
   local players, err = fetchPlayers()
   if not players then
-    print("FEHLER")
+    print("ERROR")
     error(err, 0)
   end
   print("OK")
 
   if not findPlayer(players, driverName) then
-    print("Fahrer ist momentan nicht im Tracker.")
+    print("Driver is not currently visible in the tracker.")
     printOnlinePlayers(players)
-    error("HoverNav erneut starten und Namen pruefen.", 0)
+    error("Restart HoverNav and check the driver name.", 0)
   end
 
-  write("Zielname: ")
+  write("Destination name: ")
   local destinationName = read()
   local waypoints = loadWaypoints()
   local targetPlayer = findPlayer(players, destinationName)
   local waypoint = waypoints[destinationName:lower()]
 
   if not targetPlayer and not waypoint then
-    print("Ziel ist kein Online-Spieler und noch nicht gespeichert.")
-    print("Koordinaten fuer '" .. destinationName .. "' eingeben:")
+    print("Destination is not an online player or saved waypoint.")
+    print("Enter coordinates for '" .. destinationName .. "':")
     waypoint = {
       name = destinationName,
       x = readNumber("X: "),
@@ -151,7 +183,7 @@ local function configure()
     }
     waypoints[destinationName:lower()] = waypoint
     saveWaypoints(waypoints)
-    print("Ort gespeichert.")
+    print("Waypoint saved.")
     sleep(0.8)
   end
 
@@ -221,9 +253,48 @@ end
 
 local function turnText(relative)
   local difference = math.abs(relative)
-  if difference <= 8 then return "GERADEAUS" end
-  if difference >= 165 then return "UMDREHEN" end
-  return relative > 0 and "RECHTS" or "LINKS"
+  if difference <= turnDeadzone then return "FORWARD" end
+  if difference >= 165 then return "TURN AROUND" end
+  return relative > 0 and "TURN RIGHT" or "TURN LEFT"
+end
+
+local function computeThrusters(relative, distance, heightDifference, speed)
+  local state = {
+    forward = false,
+    reverse = false,
+    left = false,
+    right = false,
+    lift = false
+  }
+
+  if not autopilotArmed then return state end
+
+  if distance <= arrivalDistance then
+    state.reverse = speed > 0.5
+    return state
+  end
+
+  state.left = relative < -turnDeadzone
+  state.right = relative > turnDeadzone
+  state.forward = math.abs(relative) <= throttleAngle
+  state.reverse = math.abs(relative) >= reverseAngle and speed > 2
+  state.lift = heightDifference > verticalDeadzone
+
+  if state.reverse then state.forward = false end
+  return state
+end
+
+local function stateText(state)
+  local function mark(active, label)
+    return active and label or "-"
+  end
+  return table.concat({
+    mark(state.forward, "FWD"),
+    mark(state.reverse, "REV"),
+    mark(state.left, "LEFT"),
+    mark(state.right, "RIGHT"),
+    mark(state.lift, "LIFT")
+  }, " ")
 end
 
 local function drawCompass(display, relative, color, top)
@@ -264,7 +335,7 @@ local function chooseDisplay()
 end
 
 local function drawDashboard(display, driver, target, destinationName,
-  velocity, heading, relative, distance, heightDifference, trackerError)
+  velocity, heading, relative, distance, heightDifference, trackerError, thrusters)
   clear(display)
   local width, height = display.getSize()
   local color = directionColor(relative)
@@ -272,34 +343,38 @@ local function drawDashboard(display, driver, target, destinationName,
   safeWrite(display, 1, 1, string.rep(" ", width), colors.black, colors.blue)
   center(display, 1, "AERO // HOVERNAV", colors.white, colors.blue)
   safeWrite(display, 1, 2, "PILOT: " .. driver.name, colors.cyan, colors.black)
-  safeWrite(display, 1, 3, "ZIEL : " .. destinationName, colors.magenta, colors.black)
+  safeWrite(display, 1, 3, "DEST : " .. destinationName, colors.magenta, colors.black)
+  safeWrite(display, 1, 4,
+    "AUTOPILOT: " .. (autopilotArmed and "ARMED" or "DISARMED"),
+    autopilotArmed and colors.lime or colors.red, colors.black)
 
   local speed = velocity and velocity.speed or 0
   local speedColor = speed > 20 and colors.red or speed > 10 and colors.orange or colors.lime
   safeWrite(display, 1, 5, ("SPEED  %5.1f b/s"):format(speed), speedColor, colors.black)
   safeWrite(display, 1, 6, ("       %5.1f km/h"):format(speed * 3.6), speedColor, colors.black)
   safeWrite(display, math.max(1, width - 14), 5,
-    velocity and velocity.source or "KEINE DATEN", colors.gray, colors.black)
+    velocity and velocity.source or "NO DATA", colors.gray, colors.black)
 
-  safeWrite(display, 1, 8, ("DIST   %.0f m"):format(distance), colors.white, colors.black)
-  safeWrite(display, 1, 9, ("HOEHE  %+.0f m"):format(heightDifference), colors.lightBlue, colors.black)
+  safeWrite(display, 1, 8, ("DISTANCE  %.0f blocks"):format(distance), colors.yellow, colors.black)
+  safeWrite(display, 1, 9, ("ALTITUDE  %+.0f blocks"):format(heightDifference), colors.lightBlue, colors.black)
+  safeWrite(display, 1, 10, "THR: " .. stateText(thrusters), colors.white, colors.black)
 
   if heading then
     safeWrite(display, math.max(1, width - 18), 8,
-      ("KURS %s %03d"):format(cardinal(heading), math.floor(heading + 0.5) % 360),
+      ("COURSE %s %03d"):format(cardinal(heading), math.floor(heading + 0.5) % 360),
       colors.lightGray, colors.black)
   end
 
-  local compassTop = math.min(11, math.max(10, height - 11))
+  local compassTop = math.min(12, math.max(11, height - 10))
   drawCompass(display, relative, color, compassTop)
 
   local instruction = turnText(relative)
   center(display, height - 2,
-    ("%s  %+.0f Grad"):format(instruction, relative), color, colors.black)
-  center(display, height - 1, "Q Ende | R Neues Ziel", colors.gray, colors.black)
+    ("%s  %+.0f DEG"):format(instruction, relative), color, colors.black)
+  center(display, height - 1, "P ARM | R RESET | Q E-STOP", colors.gray, colors.black)
 
   if trackerError then
-    center(display, height, "TRACKER: ALTE DATEN", colors.red, colors.black)
+    center(display, height, "TRACKER: STALE DATA", colors.red, colors.black)
   else
     center(display, height, "TRACKER: ONLINE", colors.green, colors.black)
   end
@@ -314,6 +389,9 @@ local lastHeading
 local lastDriver
 local lastTarget
 
+allThrustersOff()
+
+local function runNavigation()
 while true do
   local now = (os.epoch and os.epoch("utc") / 1000) or os.clock()
   local players, trackerError = fetchPlayers()
@@ -325,8 +403,11 @@ while true do
     local elapsed = previousTime and (now - previousTime) or nil
     local velocity = sableVelocity() or derivedVelocity(driver, previousPosition, elapsed)
 
-    if velocity and (math.abs(velocity.x) + math.abs(velocity.z)) > 0.15 then
+    local yawHeading = driver.yaw and ((180 + driver.yaw) % 360) or nil
+    if velocity and (math.abs(velocity.x) + math.abs(velocity.z)) > 1 then
       lastHeading = bearing(velocity.x, velocity.z)
+    elseif yawHeading then
+      lastHeading = yawHeading
     end
 
     local dx = target.x - driver.x
@@ -336,18 +417,27 @@ while true do
     local targetBearing = bearing(dx, dz)
     local heading = lastHeading or targetBearing
     local relative = normalizeAngle(targetBearing - heading)
+    local speed = velocity and velocity.speed or 0
+    local thrusters = {
+      forward = false, reverse = false, left = false, right = false, lift = false
+    }
+    if not trackerError then
+      thrusters = computeThrusters(relative, distance, dy, speed)
+    end
+    applyThrusters(thrusters)
 
     drawDashboard(display, driver, target, destinationName, velocity,
-      lastHeading, relative, distance, dy, trackerError)
+      lastHeading, relative, distance, dy, trackerError, thrusters)
 
     previousPosition = { x = driver.x, y = driver.y, z = driver.z }
     previousTime = now
     lastDriver = driver
     lastTarget = target
   else
+    allThrustersOff()
     clear(display)
-    center(display, 2, "HOVERNAV WARTE AUF TRACKER", colors.orange, colors.black)
-    center(display, 4, not driver and "FAHRER NICHT GEFUNDEN" or "ZIEL NICHT GEFUNDEN",
+    center(display, 2, "HOVERNAV WAITING FOR TRACKER", colors.orange, colors.black)
+    center(display, 4, not driver and "DRIVER NOT FOUND" or "DESTINATION NOT FOUND",
       colors.red, colors.black)
   end
 
@@ -357,14 +447,29 @@ while true do
     if event == "timer" and value == timer then
       break
     elseif event == "key" and value == keys.q then
+      autopilotArmed = false
+      allThrustersOff()
       clear(display)
       clear(term)
-      print("HoverNav beendet.")
+      print("HoverNav stopped. All thrusters are OFF.")
       return
     elseif event == "key" and value == keys.r then
+      autopilotArmed = false
+      allThrustersOff()
       clear(display)
       shell.run(shell.getRunningProgram())
       return
+    elseif event == "key" and value == keys.p then
+      autopilotArmed = not autopilotArmed
+      if not autopilotArmed then allThrustersOff() end
     end
   end
+end
+end
+
+local ok, runError = pcall(runNavigation)
+autopilotArmed = false
+allThrustersOff()
+if not ok then
+  error(runError, 0)
 end
