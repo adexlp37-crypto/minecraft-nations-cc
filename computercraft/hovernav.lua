@@ -1,11 +1,11 @@
 local trackerUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
 local waypointFile = ".hovernav_waypoints"
 local refreshRate = 1
-local arrivalDistance = 8
-local turnDeadzone = 8
-local throttleAngle = 65
-local reverseAngle = 150
-local verticalDeadzone = 3
+local arrivalDistance = 7
+local turnDeadzone = 6
+local throttleAngle = 45
+local verticalDeadzone = 2
+local maintenanceLiftPulse = 0.06
 
 -- Thruster wiring. The top side is intentionally never used by redstone.
 local thrusterSides = {
@@ -258,7 +258,32 @@ local function turnText(relative)
   return relative > 0 and "TURN RIGHT" or "TURN LEFT"
 end
 
-local function computeThrusters(relative, distance, heightDifference, speed)
+local function steeringPulse(angle)
+  angle = math.abs(angle)
+  if angle <= 12 then return 0.05 end
+  if angle <= 30 then return 0.08 end
+  if angle <= 60 then return 0.12 end
+  if angle <= 100 then return 0.16 end
+  return 0.20
+end
+
+local function approachSpeed(distance)
+  if distance > 180 then return 18 end
+  if distance > 90 then return 12 end
+  if distance > 45 then return 7 end
+  if distance > 20 then return 4 end
+  return 1.5
+end
+
+local function forwardPulse(distance)
+  if distance > 180 then return nil end
+  if distance > 90 then return 0.35 end
+  if distance > 45 then return 0.22 end
+  if distance > 20 then return 0.12 end
+  return 0.06
+end
+
+local function computeThrusters(relative, distance, heightDifference, speed, verticalSpeed)
   local state = {
     forward = false,
     reverse = false,
@@ -266,22 +291,46 @@ local function computeThrusters(relative, distance, heightDifference, speed)
     right = false,
     lift = false
   }
+  local pulses = {}
 
-  if not autopilotArmed then return state end
+  if not autopilotArmed then return state, pulses, 0 end
+
+  local desiredSpeed = approachSpeed(distance)
 
   if distance <= arrivalDistance then
     state.reverse = speed > 0.5
-    return state
+    if state.reverse then pulses.reverse = 0.10 end
+    return state, pulses, 0
   end
 
   state.left = relative < -turnDeadzone
   state.right = relative > turnDeadzone
-  state.forward = math.abs(relative) <= throttleAngle
-  state.reverse = math.abs(relative) >= reverseAngle and speed > 2
-  state.lift = heightDifference > verticalDeadzone
+  if state.left then pulses.left = steeringPulse(relative) end
+  if state.right then pulses.right = steeringPulse(relative) end
 
-  if state.reverse then state.forward = false end
-  return state
+  local aligned = math.abs(relative) <= throttleAngle
+  state.forward = aligned and speed < desiredSpeed
+  if state.forward then pulses.forward = forwardPulse(distance) end
+
+  state.reverse = speed > desiredSpeed + 2
+  if state.reverse then
+    state.forward = false
+    pulses.reverse = distance < 45 and 0.12 or 0.08
+  end
+
+  if heightDifference > verticalDeadzone then
+    state.lift = true
+    pulses.lift = heightDifference > 8 and 0.16 or 0.10
+  elseif heightDifference >= -1.5 and verticalSpeed < -0.10 then
+    state.lift = true
+    pulses.lift = maintenanceLiftPulse
+  elseif heightDifference >= -0.5 then
+    -- Tiny periodic pulse to counter the hover bike's passive sink rate.
+    state.lift = true
+    pulses.lift = maintenanceLiftPulse
+  end
+
+  return state, pulses, desiredSpeed
 end
 
 local function stateText(state)
@@ -335,7 +384,8 @@ local function chooseDisplay()
 end
 
 local function drawDashboard(display, driver, target, destinationName,
-  velocity, heading, relative, distance, heightDifference, trackerError, thrusters)
+  velocity, heading, relative, distance, heightDifference, trackerError,
+  thrusters, desiredSpeed)
   clear(display)
   local width, height = display.getSize()
   local color = directionColor(relative)
@@ -358,6 +408,8 @@ local function drawDashboard(display, driver, target, destinationName,
   safeWrite(display, 1, 8, ("DISTANCE  %.0f blocks"):format(distance), colors.yellow, colors.black)
   safeWrite(display, 1, 9, ("ALTITUDE  %+.0f blocks"):format(heightDifference), colors.lightBlue, colors.black)
   safeWrite(display, 1, 10, "THR: " .. stateText(thrusters), colors.white, colors.black)
+  safeWrite(display, math.max(1, width - 18), 6,
+    ("TARGET %4.1f b/s"):format(desiredSpeed or 0), colors.gray, colors.black)
 
   if heading then
     safeWrite(display, math.max(1, width - 18), 8,
@@ -388,6 +440,7 @@ local previousTime
 local lastHeading
 local lastDriver
 local lastTarget
+local cruiseAltitude
 
 allThrustersOff()
 
@@ -398,6 +451,11 @@ while true do
   local driver = players and findPlayer(players, driverName) or lastDriver
   local target = players and findPlayer(players, destinationName)
     or waypoints[destinationName:lower()] or lastTarget
+  local thrusters = {
+    forward = false, reverse = false, left = false, right = false, lift = false
+  }
+  local pulses = {}
+  local desiredSpeed = 0
 
   if driver and target then
     local elapsed = previousTime and (now - previousTime) or nil
@@ -413,21 +471,27 @@ while true do
     local dx = target.x - driver.x
     local dy = target.y - driver.y
     local dz = target.z - driver.z
+    local horizontalDistance = math.sqrt(dx * dx + dz * dz)
     local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
     local targetBearing = bearing(dx, dz)
     local heading = lastHeading or targetBearing
     local relative = normalizeAngle(targetBearing - heading)
     local speed = velocity and velocity.speed or 0
-    local thrusters = {
-      forward = false, reverse = false, left = false, right = false, lift = false
-    }
+    local verticalSpeed = velocity and velocity.y or 0
+    if not cruiseAltitude then cruiseAltitude = driver.y end
+    local controlHeightDifference = dy
+    if horizontalDistance > 35 then
+      local routeAltitude = math.max(cruiseAltitude, target.y + 4)
+      controlHeightDifference = routeAltitude - driver.y
+    end
     if not trackerError then
-      thrusters = computeThrusters(relative, distance, dy, speed)
+      thrusters, pulses, desiredSpeed =
+        computeThrusters(relative, distance, controlHeightDifference, speed, verticalSpeed)
     end
     applyThrusters(thrusters)
 
     drawDashboard(display, driver, target, destinationName, velocity,
-      lastHeading, relative, distance, dy, trackerError, thrusters)
+      lastHeading, relative, distance, dy, trackerError, thrusters, desiredSpeed)
 
     previousPosition = { x = driver.x, y = driver.y, z = driver.z }
     previousTime = now
@@ -442,10 +506,23 @@ while true do
   end
 
   local timer = os.startTimer(refreshRate)
+  local pulseTimers = {}
+  if pulses then
+    for control, duration in pairs(pulses) do
+      if duration and thrusters[control] then
+        pulseTimers[os.startTimer(duration)] = thrusterSides[control]
+      end
+    end
+  end
   while true do
     local event, value = os.pullEvent()
-    if event == "timer" and value == timer then
-      break
+    if event == "timer" then
+      if pulseTimers[value] then
+        redstone.setOutput(pulseTimers[value], false)
+        pulseTimers[value] = nil
+      elseif value == timer then
+        break
+      end
     elseif event == "key" and value == keys.q then
       autopilotArmed = false
       allThrustersOff()
