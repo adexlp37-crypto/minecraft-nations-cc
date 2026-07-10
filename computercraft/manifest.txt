@@ -1,3 +1,4 @@
 # One repository-relative ComputerCraft filename per line.
 hello.lua
 notes.lua
+fieldnav.lua
