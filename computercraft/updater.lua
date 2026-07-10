@@ -5,6 +5,12 @@ local branch = "main"
 local baseUrl = ("https://raw.githubusercontent.com/%s/%s/%s/computercraft/")
   :format(owner, repository, branch)
 
+local cacheBuster = tostring(os.epoch and os.epoch("utc") or os.clock())
+
+local function freshUrl(filename)
+  return baseUrl .. filename .. "?v=" .. cacheBuster
+end
+
 local function download(url)
   local response, err = http.get(url)
   if not response then
@@ -34,7 +40,7 @@ local function install(filename, contents)
 end
 
 print("Lade Manifest...")
-local manifest, manifestError = download(baseUrl .. "manifest.txt")
+local manifest, manifestError = download(freshUrl("manifest.txt"))
 if not manifest then
   error("Manifest konnte nicht geladen werden: " .. manifestError, 0)
 end
@@ -53,7 +59,7 @@ end
 
 for index, filename in ipairs(files) do
   write(("[%d/%d] %s ... "):format(index, #files, filename))
-  local contents, err = download(baseUrl .. filename)
+  local contents, err = download(freshUrl(filename))
   if not contents then
     print("FEHLER")
     error(("Download von %s fehlgeschlagen: %s"):format(filename, err), 0)
@@ -64,4 +70,3 @@ for index, filename in ipairs(files) do
 end
 
 print("Update abgeschlossen.")
-
