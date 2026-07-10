@@ -1,7 +1,8 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "3"
+local version = "4"
+local retiredFiles = { "notes.lua", "fieldnav.lua" }
 
 local baseUrl = ("https://raw.githubusercontent.com/%s/%s/%s/computercraft/")
   :format(owner, repository, branch)
@@ -41,6 +42,12 @@ local function install(filename, contents)
 end
 
 print("Minecraft Nations Updater v" .. version)
+for _, filename in ipairs(retiredFiles) do
+  if fs.exists(filename) then
+    fs.delete(filename)
+    print("Entfernt: " .. filename)
+  end
+end
 print("Lade Manifest...")
 local manifest, manifestError = download(freshUrl("manifest.txt"))
 if not manifest then
