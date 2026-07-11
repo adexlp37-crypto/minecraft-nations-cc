@@ -1,260 +1,262 @@
 math.randomseed(os.time())
 
--- === KONFIGURATION ===
-local monitorName = "left"
-local updateInterval = 0.01 -- Sicherer Intervall fÃ¼r Google (Sperren-Schutz)
-local modemSide = "top"   -- Wireless Modem oben
+local preferredMonitorSide = "left"
+local preferredModemSide = "top"
+local updateInterval = 3
+local renderInterval = 0.3
 
--- DEINE SCHANDLISTE (Trage hier die Spieler fÃ¼r die "sad people"-Box ein)
-local sadPeople = {
-    ["Tbnyeet"] = true,
-    ["Lilia_Mer"] = true,
+local watchlist = {
+  ["Tbnyeet"] = true,
+  ["Lilia_Mer"] = true,
 }
 
--- Deine Google Web-App URL
 local googleAppUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
 
--- === RGB, ANIMATION & CLICK SYSTEM ===
-local cachedPlayers = {}      -- Live-Daten Zwischenspeicher
-local highlightedPlayers = {} -- Hier werden markierte (gepinnte) Spieler gespeichert
-local playerClickMap = {}     -- Ordnet Zeilen (Y) den Spielernamen zu
+local cachedPlayers = {}
+local highlightedPlayers = {}
+local playerClickMap = {}
+local lastStatus = "Starting..."
+local lastUpdate = "never"
 
 local blinkState = true
 local colorIndex = 1
 local rainbowColors = {
-    colors.red, colors.orange, colors.yellow, 
-    colors.green, colors.blue, colors.purple, colors.magenta
+  colors.red, colors.orange, colors.yellow,
+  colors.green, colors.blue, colors.purple, colors.magenta
 }
 
--- === REDNET INITIALISIEREN ===
-if peripheral.isPresent(modemSide) and peripheral.getType(modemSide) == "modem" then
-    rednet.open(modemSide)
-    print("Rednet aktiv auf Seite '" .. modemSide .. "'.")
+local function findMonitor()
+  if peripheral.getType(preferredMonitorSide) == "monitor" then
+    return preferredMonitorSide, peripheral.wrap(preferredMonitorSide)
+  end
+
+  local name, monitor = peripheral.find("monitor")
+  return name, monitor
+end
+
+local function openModem()
+  if peripheral.getType(preferredModemSide) == "modem" then
+    rednet.open(preferredModemSide)
+    print("Rednet active on " .. preferredModemSide)
+    return
+  end
+
+  for _, side in ipairs(peripheral.getNames()) do
+    if peripheral.getType(side) == "modem" then
+      rednet.open(side)
+      print("Rednet active on " .. side)
+      return
+    end
+  end
+
+  print("No modem found. Scanner display still works.")
+end
+
+local monitorName, monitor = findMonitor()
+if monitor then
+  monitor.setTextScale(0.5)
 else
-    print("WARNUNG: Kein Modem auf '" .. modemSide .. "' gefunden!")
+  print("No monitor found. Attach one or change preferredMonitorSide.")
 end
 
-local monitor = peripheral.wrap(monitorName)
-if monitor then monitor.setTextScale(1.0) end
+openModem()
 
--- === LOOP 1: DATEN AUS DEM INTERNET HOLEN ===
+local function writeLine(target, y, text, textColor, backgroundColor)
+  local width = target.getSize()
+  target.setCursorPos(1, y)
+  target.setTextColor(textColor or colors.white)
+  target.setBackgroundColor(backgroundColor or colors.black)
+  if #text > width then
+    text = text:sub(1, width)
+  end
+  target.write(text .. string.rep(" ", math.max(0, width - #text)))
+end
+
+local function playerCoords(player)
+  local position = player.position or {}
+  local x = math.floor((position.x or 0) + 0.5)
+  local y = math.floor((position.y or 0) + 0.5)
+  local z = math.floor((position.z or 0) + 0.5)
+  return x, y, z
+end
+
+local function normalizePlayers(data)
+  if type(data) ~= "table" then
+    return {}
+  end
+
+  local players = data.players or data
+  if type(players) ~= "table" then
+    return {}
+  end
+
+  local normalized = {}
+  for _, player in ipairs(players) do
+    if type(player) == "table" and player.name and player.position then
+      normalized[#normalized + 1] = player
+    end
+  end
+  return normalized
+end
+
 local function internetFetchLoop()
-    local httpHeaders = {
-        ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        ["Accept"] = "application/json"
-    }
-    
-    while true do
-        print("[" .. os.date("%X") .. "] Update von Google Cloud...")
-        local cacheBuster = math.random(1, 100000)
-        local finalUrl = googleAppUrl .. "?cb=" .. cacheBuster
-        
-        local httpSuccess, response = pcall(http.get, finalUrl, httpHeaders)
-        if httpSuccess and response then
-            local readSuccess, rawJson = pcall(response.readAll)
-            response.close()
-            
-            if readSuccess and rawJson and rawJson ~= "" then
-                local jsonSuccess, data = pcall(textutils.unserializeJSON, rawJson)
-                if jsonSuccess and data and data.players then
-                    cachedPlayers = data.players
-                    if rednet.isOpen() then
-                        rednet.broadcast(rawJson, "bluemap_alarm_system")
-                    end
-                end
-            end
+  local httpHeaders = {
+    ["User-Agent"] = "CC-Tweaked Minecraft Nations Scanner",
+    ["Accept"] = "application/json",
+    ["Cache-Control"] = "no-cache"
+  }
+
+  while true do
+    local epoch = os.epoch and os.epoch("utc") or os.clock()
+    local finalUrl = googleAppUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
+    local httpSuccess, response = pcall(http.get, {
+      url = finalUrl,
+      headers = httpHeaders,
+      redirect = true
+    })
+
+    if httpSuccess and response then
+      local readSuccess, rawJson = pcall(response.readAll)
+      response.close()
+
+      if readSuccess and rawJson and rawJson ~= "" then
+        local jsonSuccess, data = pcall(textutils.unserializeJSON, rawJson)
+        local players = normalizePlayers(data)
+
+        if jsonSuccess and #players > 0 then
+          cachedPlayers = players
+          lastStatus = "OK: " .. tostring(#players) .. " players"
+          lastUpdate = os.date("%H:%M:%S")
+          if rednet.isOpen() then
+            rednet.broadcast(rawJson, "bluemap_alarm_system")
+          end
+        elseif jsonSuccess then
+          cachedPlayers = {}
+          lastStatus = "OK: no players"
+          lastUpdate = os.date("%H:%M:%S")
         else
-            print("[WARNUNG] Google-Timeout. Nutze alte Daten weiter.")
+          lastStatus = "JSON error"
         end
-        os.sleep(updateInterval)
+      else
+        lastStatus = "Empty response"
+      end
+    else
+      lastStatus = "HTTP error"
     end
+
+    os.sleep(updateInterval)
+  end
 end
 
--- === LOOP 2: ANIMATION UND MONITOR-RENDERING (Dauerfeuer) ===
 local function monitorRenderLoop()
-    if not monitor then 
-        print("Fehler: Kein Monitor gefunden.") 
-        return 
+  if not monitor then
+    while true do
+      print("Scanner running without monitor. " .. lastStatus)
+      os.sleep(5)
+    end
+  end
+
+  while true do
+    local maxW, maxH = monitor.getSize()
+    playerClickMap = {}
+
+    monitor.setBackgroundColor(colors.black)
+    monitor.clear()
+
+    writeLine(monitor, 1, "BlueMap Player Tracker", colors.white)
+    writeLine(monitor, 2, "Status: " .. lastStatus .. " | " .. lastUpdate, colors.gray)
+
+    local pinnedList = {}
+    local normalList = {}
+    local watchListPlayers = {}
+
+    for _, player in ipairs(cachedPlayers) do
+      if highlightedPlayers[player.name] then
+        pinnedList[#pinnedList + 1] = player
+      elseif watchlist[player.name] then
+        watchListPlayers[#watchListPlayers + 1] = player
+      else
+        normalList[#normalList + 1] = player
+      end
     end
 
-    while true do
-        local maxW, maxH = monitor.getSize()
-        playerClickMap = {} -- Klick-Karte fÃ¼r diesen Frame zurÃ¼cksetzen
-        
-        monitor.setBackgroundColor(colors.black)
-        monitor.clear()
-        
-        -- Haupt-Titel ganz oben
-        monitor.setTextColor(colors.white)
-        monitor.setCursorPos(1, 1)
-        monitor.write("=== BlueMap Player Tracker ===")
-        
-        -- Listen vorbereiten und vorsortieren
-        local pinnedList = {}
-        local normalList = {}
-        local sadList = {}
-        
-        for _, player in ipairs(cachedPlayers) do
-            if player.name and player.position then
-                if highlightedPlayers[player.name] then
-                    table.insert(pinnedList, player) -- Wandert in die Top-Sektion
-                elseif sadPeople[player.name] then
-                    table.insert(sadList, player)    -- Wandert in die untere Box
-                else
-                    table.insert(normalList, player) -- Normaler Spieler
-                end
-            end
-        end
-        
-        local currentY = 3
-        
-        -- ======================================================
-        -- 1. SEKTION: GEPINNTE SPIELER (Ganz oben mit Mega-Effekt)
-        -- ======================================================
-        if #pinnedList > 0 then
-            monitor.setBackgroundColor(colors.black)
-            monitor.setTextColor(blinkState and colors.yellow or colors.orange)
-            monitor.setCursorPos(1, currentY)
-            monitor.write(">> ðŸ“Œ HIGH PRIORITY TARGETS ðŸ“Œ <<")
-            currentY = currentY + 1
-            
-            for _, player in ipairs(pinnedList) do
-                playerClickMap[currentY] = player.name -- Klick registrieren
-                
-                local x = math.floor(player.position.x + 0.5)
-                local y = math.floor(player.position.y + 0.5)
-                local z = math.floor(player.position.z + 0.5)
-                
-                -- Krasse Pfeil- und Farb-Animation generieren
-                local prefix = blinkState and "==> " or "--> "
-                local suffix = blinkState and " <==" or " <-- "
-                local txtColor = blinkState and colors.white or colors.yellow
-                
-                monitor.setBackgroundColor(colors.purple) -- AuffÃ¤lliger lila Balken
-                monitor.setTextColor(txtColor)
-                monitor.setCursorPos(1, currentY)
-                
-                local formattedText = string.format("%s%s: X:%d Y:%d Z:%d%s", prefix, player.name, x, y, z, suffix)
-                -- Zeile komplett ausfÃ¼llen, damit der lila Balken durchgezogen ist
-                monitor.write(formattedText .. string.rep(" ", maxW - #formattedText))
-                
-                currentY = currentY + 1
-            end
-            
-            -- Kleine Trennlinie nach den gepinnten Leuten
-            monitor.setBackgroundColor(colors.black)
-            monitor.setTextColor(colors.gray)
-            monitor.setCursorPos(1, currentY)
-            monitor.write(string.rep("-", maxW))
-            currentY = currentY + 1
-        end
-        
-        -- ======================================================
-        -- 2. SEKTION: NORMALE ONLINE-SPIELER
-        -- ======================================================
-        monitor.setBackgroundColor(colors.black)
-        for _, player in ipairs(normalList) do
-            playerClickMap[currentY] = player.name -- Klick registrieren
-            
-            local x = math.floor(player.position.x + 0.5)
-            local y = math.floor(player.position.y + 0.5)
-            local z = math.floor(player.position.z + 0.5)
-            local formattedText = string.format("%s: X:%d Y:%d Z:%d", player.name, x, y, z)
-            
-            monitor.setTextColor(colors.lightGray)
-            monitor.setCursorPos(1, currentY)
-            monitor.write(formattedText .. string.rep(" ", maxW - #formattedText))
-            currentY = currentY + 1
-        end
-        
-        -- Falls absolut niemand online ist
-        if #cachedPlayers == 0 then
-            monitor.setTextColor(colors.gray)
-            monitor.setCursorPos(1, 3)
-            monitor.write("Warte auf Daten/Keiner online...")
-        end
-        
-        -- ======================================================
-        -- 3. SEKTION: DIE "SAD PEOPLE" BOX (Unten am Monitor)
-        -- ======================================================
-        if #sadList > 0 then
-            local boxHeight = #sadList + 2
-            local boxTop = maxH - boxHeight
-            
-            local boxColor = blinkState and colors.red or colors.gray
-            monitor.setTextColor(boxColor)
-            monitor.setBackgroundColor(colors.black)
-            
-            -- Obere Box-Linie
-            monitor.setCursorPos(1, boxTop)
-            monitor.write("+" .. string.rep("-", maxW - 2) .. "+")
-            
-            -- Inhalt der Box zeichnen
-            for i, player in ipairs(sadList) do
-                local sadY = boxTop + i
-                playerClickMap[sadY] = player.name -- Klick registrieren
-                
-                -- SeitenwÃ¤nde
-                monitor.setTextColor(boxColor)
-                monitor.setCursorPos(1, sadY)
-                monitor.write("|")
-                monitor.setCursorPos(maxW, sadY)
-                monitor.write("|")
-                
-                local x = math.floor(player.position.x + 0.5)
-                local y = math.floor(player.position.y + 0.5)
-                local z = math.floor(player.position.z + 0.5)
-                local formattedText = string.format("%s: X:%d Y:%d Z:%d", player.name, x, y, z)
-                
-                -- Regenbogeneffekt fÃ¼r die unmarkierten Sad-People
-                local localColorIndex = ((colorIndex + i) % #rainbowColors) + 1
-                monitor.setTextColor(rainbowColors[localColorIndex])
-                monitor.setCursorPos(3, sadY)
-                monitor.write(formattedText)
-            end
-            
-            -- Untere Box-Linie
-            monitor.setTextColor(boxColor)
-            monitor.setCursorPos(1, maxH - 1)
-            monitor.write("+" .. string.rep("-", maxW - 2) .. "+")
-            
-            -- Box-Tag ganz unten
-            monitor.setTextColor(colors.red)
-            monitor.setCursorPos(2, maxH)
-            monitor.write("GoyimRadar")
-        end
-        
-        -- Animations-Ticker weiterschalten
-        blinkState = not blinkState
-        colorIndex = colorIndex + 1
-        
-        os.sleep(0.3) -- Frame-Geschwindigkeit
+    local currentY = 4
+
+    if #pinnedList > 0 then
+      writeLine(monitor, currentY, ">> HIGH PRIORITY TARGETS <<", blinkState and colors.yellow or colors.orange)
+      currentY = currentY + 1
+
+      for _, player in ipairs(pinnedList) do
+        playerClickMap[currentY] = player.name
+        local x, y, z = playerCoords(player)
+        local prefix = blinkState and "==> " or "--> "
+        local suffix = blinkState and " <==" or " <--"
+        local text = string.format("%s%s: X:%d Y:%d Z:%d%s", prefix, player.name, x, y, z, suffix)
+        writeLine(monitor, currentY, text, blinkState and colors.white or colors.yellow, colors.purple)
+        currentY = currentY + 1
+      end
+
+      writeLine(monitor, currentY, string.rep("-", maxW), colors.gray)
+      currentY = currentY + 1
     end
+
+    for _, player in ipairs(normalList) do
+      if currentY < maxH then
+        playerClickMap[currentY] = player.name
+        local x, y, z = playerCoords(player)
+        writeLine(monitor, currentY, string.format("%s: X:%d Y:%d Z:%d", player.name, x, y, z), colors.lightGray)
+        currentY = currentY + 1
+      end
+    end
+
+    if #cachedPlayers == 0 then
+      writeLine(monitor, 4, "Waiting for player data...", colors.gray)
+    end
+
+    if #watchListPlayers > 0 and maxH >= 5 then
+      local boxHeight = math.min(#watchListPlayers + 2, maxH - 3)
+      local boxTop = maxH - boxHeight + 1
+      local boxColor = blinkState and colors.red or colors.gray
+
+      writeLine(monitor, boxTop, "+" .. string.rep("-", math.max(0, maxW - 2)) .. "+", boxColor)
+
+      for i, player in ipairs(watchListPlayers) do
+        local row = boxTop + i
+        if row < maxH then
+          playerClickMap[row] = player.name
+          local x, y, z = playerCoords(player)
+          local localColorIndex = ((colorIndex + i) % #rainbowColors) + 1
+          local text = string.format("| %s: X:%d Y:%d Z:%d", player.name, x, y, z)
+          writeLine(monitor, row, text, rainbowColors[localColorIndex])
+          monitor.setCursorPos(maxW, row)
+          monitor.setTextColor(boxColor)
+          monitor.write("|")
+        end
+      end
+
+      writeLine(monitor, maxH, "+" .. string.rep("-", math.max(0, maxW - 2)) .. "+", boxColor)
+    end
+
+    blinkState = not blinkState
+    colorIndex = colorIndex + 1
+    os.sleep(renderInterval)
+  end
 end
 
--- === LOOP 3: TOUCH-EINGABEN REGISTRIEREN ===
 local function monitorTouchLoop()
-    while true do
-        local event, side, x, y = os.pullEvent("monitor_touch")
-        
-        if side == monitorName then
-            local clickedPlayer = playerClickMap[y]
-            
-            if clickedPlayer then
-                -- Wenn bereits gepinnt -> entpinnen, ansonsten anheften!
-                if highlightedPlayers[clickedPlayer] then
-                    highlightedPlayers[clickedPlayer] = nil
-                else
-                    highlightedPlayers[clickedPlayer] = true
-                end
-            end
-        end
+  while true do
+    local event, side, x, y = os.pullEvent("monitor_touch")
+    if side == monitorName then
+      local clickedPlayer = playerClickMap[y]
+      if clickedPlayer then
+        highlightedPlayers[clickedPlayer] = not highlightedPlayers[clickedPlayer] or nil
+      end
     end
+  end
 end
 
--- === START ===
-if not http then error("HTTP-Plugin deaktiviert!") end
+if not http then
+  error("HTTP is disabled in the server config.", 0)
+end
 
--- Startet alle drei Prozesse absolut synchron
 parallel.waitForAny(internetFetchLoop, monitorRenderLoop, monitorTouchLoop)
-
