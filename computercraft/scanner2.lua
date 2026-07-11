@@ -29,6 +29,10 @@ local playerClickMap = {}
 local lastStatus = "Starting..."
 local lastUpdate = "never"
 local activePlayerUrl = nil
+local diagnosticLines = {
+  "No request completed yet.",
+  "Checking BlueMap endpoints..."
+}
 
 local blinkState = true
 local colorIndex = 1
@@ -66,7 +70,7 @@ end
 
 local monitorName, monitor = findMonitor()
 if monitor then
-  monitor.setTextScale(0.5)
+  monitor.setTextScale(1)
 else
   print("No monitor found. Attach one or change preferredMonitorSide.")
 end
@@ -149,43 +153,72 @@ local function looksLikePlayerPayload(data)
 end
 
 local function requestJson(url, headers)
-  local httpSuccess, response = pcall(http.get, {
+  local httpSuccess, response, requestError = pcall(http.get, {
     url = url,
     headers = headers,
     redirect = true
   })
 
-  if not httpSuccess or not response then
-    return nil, "HTTP error"
+  if not httpSuccess then
+    return nil, "HTTP crashed: " .. tostring(response)
   end
+
+  if not response then
+    return nil, "Request failed: " .. tostring(requestError or "unknown")
+  end
+
+  local responseCode = response.getResponseCode and response.getResponseCode() or 200
 
   local readSuccess, rawJson = pcall(response.readAll)
   response.close()
 
   if not readSuccess or not rawJson or rawJson == "" then
-    return nil, "Empty response"
+    return nil, "HTTP " .. tostring(responseCode) .. ": empty response"
   end
 
   local jsonSuccess, data = pcall(textutils.unserializeJSON, rawJson)
   if not jsonSuccess then
-    return nil, "JSON error"
+    return nil, "HTTP " .. tostring(responseCode) .. ": invalid JSON"
   end
 
-  return data, nil, rawJson
+  return data, nil, rawJson, responseCode
 end
 
 local function discoverPlayerUrl(headers)
+  diagnosticLines = {
+    "Testing BlueMap on port 25581...",
+    "If this remains here, HTTP is blocked."
+  }
+
   for _, path in ipairs(blueMapPlayerPaths) do
     local epoch = os.epoch and os.epoch("utc") or os.clock()
     local url = blueMapBaseUrl .. path .. "?cb=" .. tostring(epoch)
-    local data = requestJson(url, headers)
+    lastStatus = "Testing " .. path
+    local data, err = requestJson(url, headers)
     local players = normalizePlayers(data)
     if looksLikePlayerPayload(data) then
       activePlayerUrl = blueMapBaseUrl .. path
+      diagnosticLines = {
+        "CONNECTED: " .. path,
+        "BlueMap data received successfully."
+      }
       return activePlayerUrl, players
     end
+
+    diagnosticLines = {
+      "Last test: " .. path,
+      err or "JSON received, but no players field",
+      "Trying the next endpoint..."
+    }
+    os.sleep(0.05)
   end
 
+  diagnosticLines = {
+    "NO PLAYER ENDPOINT FOUND",
+    "Last: " .. blueMapPlayerPaths[#blueMapPlayerPaths],
+    "Check terminal for the exact reason.",
+    "Likely: HTTP whitelist or wrong map ID."
+  }
   return nil, {}
 end
 
@@ -207,6 +240,7 @@ local function internetFetchLoop()
         lastUpdate = os.date("%H:%M:%S")
       else
         lastStatus = "BlueMap players not found"
+        print("BlueMap discovery failed. " .. table.concat(diagnosticLines, " | "))
       end
     else
       local finalUrl = activePlayerUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
@@ -249,8 +283,9 @@ local function monitorRenderLoop()
     monitor.setBackgroundColor(colors.black)
     monitor.clear()
 
-    writeLine(monitor, 1, "Direct BlueMap Player Tracker", colors.white)
-    writeLine(monitor, 2, "Status: " .. lastStatus .. " | " .. lastUpdate, colors.gray)
+    writeLine(monitor, 1, "BLUEMAP PLAYER TRACKER", colors.white, colors.blue)
+    writeLine(monitor, 2, "Status: " .. lastStatus, colors.yellow)
+    writeLine(monitor, 3, "Update: " .. lastUpdate, colors.lightGray)
 
     local pinnedList = {}
     local normalList = {}
@@ -266,7 +301,7 @@ local function monitorRenderLoop()
       end
     end
 
-    local currentY = 4
+    local currentY = 5
 
     if #pinnedList > 0 then
       writeLine(monitor, currentY, ">> HIGH PRIORITY TARGETS <<", blinkState and colors.yellow or colors.orange)
@@ -296,7 +331,15 @@ local function monitorRenderLoop()
     end
 
     if #cachedPlayers == 0 then
-      writeLine(monitor, 4, "Waiting for player data...", colors.gray)
+      writeLine(monitor, 5, "NO PLAYER DATA", colors.red)
+      for i, line in ipairs(diagnosticLines) do
+        if 6 + i <= maxH then
+          writeLine(monitor, 5 + i, line, i == 1 and colors.white or colors.lightGray)
+        end
+      end
+      if maxH >= 11 then
+        writeLine(monitor, 11, "Base: 172.255.251.68:25581", colors.gray)
+      end
     end
 
     if #watchListPlayers > 0 and maxH >= 5 then
