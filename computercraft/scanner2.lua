@@ -2,7 +2,8 @@ math.randomseed(os.time())
 
 local preferredMonitorSide = "left"
 local preferredModemSide = "top"
-local updateInterval = 1
+local updateInterval = 3
+local maxRetryInterval = 60
 local renderInterval = 0.3
 
 local watchlist = {
@@ -11,6 +12,7 @@ local watchlist = {
 }
 
 local blueMapBaseUrl = "http://172.255.251.68:25581"
+local googleProxyUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
 local blueMapPlayerPaths = {
   "/players.json",
   "/live/players.json",
@@ -229,42 +231,41 @@ local function internetFetchLoop()
     ["Cache-Control"] = "no-cache"
   }
 
+  local retryDelay = updateInterval
+
   while true do
     local epoch = os.epoch and os.epoch("utc") or os.clock()
+    local finalUrl = googleProxyUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
+    lastStatus = "Contacting Google proxy..."
 
-    if not activePlayerUrl then
-      local discoveredUrl, discoveredPlayers = discoverPlayerUrl(httpHeaders)
-      if discoveredUrl then
-        cachedPlayers = discoveredPlayers
-        lastStatus = "BlueMap linked: " .. discoveredUrl:match("/([^/]+%.json)$")
-        lastUpdate = os.date("%H:%M:%S")
-      else
-        lastStatus = "BlueMap players not found"
-        print("BlueMap discovery failed. " .. table.concat(diagnosticLines, " | "))
+    local data, err, rawJson = requestJson(finalUrl, httpHeaders)
+    local players = normalizePlayers(data)
+
+    if data and looksLikePlayerPayload(data) then
+      cachedPlayers = players
+      lastStatus = "LIVE: " .. tostring(#players) .. " players"
+      lastUpdate = os.date("%H:%M:%S")
+      retryDelay = updateInterval
+      diagnosticLines = {
+        "GOOGLE PROXY CONNECTED",
+        "Next update in " .. tostring(updateInterval) .. " seconds."
+      }
+      if rednet.isOpen() and rawJson then
+        rednet.broadcast(rawJson, "bluemap_alarm_system")
       end
     else
-      local finalUrl = activePlayerUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
-      local data, err, rawJson = requestJson(finalUrl, httpHeaders)
-      local players = normalizePlayers(data)
-
-      if data and #players > 0 then
-        cachedPlayers = players
-        lastStatus = "OK: " .. tostring(#players) .. " players"
-        lastUpdate = os.date("%H:%M:%S")
-        if rednet.isOpen() and rawJson then
-          rednet.broadcast(rawJson, "bluemap_alarm_system")
-        end
-      elseif data then
-        cachedPlayers = {}
-        lastStatus = "OK: no visible players"
-        lastUpdate = os.date("%H:%M:%S")
-      else
-        activePlayerUrl = nil
-        lastStatus = err or "BlueMap error"
-      end
+      lastStatus = err or "Proxy returned invalid player data"
+      retryDelay = math.min(maxRetryInterval, retryDelay * 2)
+      diagnosticLines = {
+        "GOOGLE PROXY TEMPORARILY BUSY",
+        lastStatus,
+        "Keeping the last known player data.",
+        "Retry in " .. tostring(retryDelay) .. " seconds."
+      }
+      print("Google proxy: " .. lastStatus .. "; retry in " .. tostring(retryDelay) .. "s")
     end
 
-    os.sleep(updateInterval)
+    os.sleep(retryDelay)
   end
 end
 
@@ -338,7 +339,7 @@ local function monitorRenderLoop()
         end
       end
       if maxH >= 11 then
-        writeLine(monitor, 11, "Base: 172.255.251.68:25581", colors.gray)
+        writeLine(monitor, 11, "Source: Google BlueMap proxy", colors.gray)
       end
     end
 
