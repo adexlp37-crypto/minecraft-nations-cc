@@ -4,8 +4,8 @@ local refreshRate = 1
 local arrivalDistance = 7
 local turnDeadzone = 6
 local throttleAngle = 45
-local verticalDeadzone = 2
-local maintenanceLiftPulse = 0.06
+local cruiseAltitude = 180
+local altitudeTolerance = 2
 
 -- Thruster wiring. The top side is intentionally never used by redstone.
 local thrusterSides = {
@@ -318,12 +318,35 @@ local function computeThrusters(relative, distance, heightDifference, speed, ver
 
   local desiredSpeed = approachSpeed(distance)
 
+  local function holdAltitude()
+    if heightDifference > 12 then
+      state.lift = true
+      pulses.lift = 0.35
+      levels.lift = 15
+    elseif heightDifference > 6 then
+      state.lift = true
+      pulses.lift = 0.25
+      levels.lift = 12
+    elseif heightDifference > altitudeTolerance then
+      state.lift = true
+      pulses.lift = 0.16
+      levels.lift = 9
+    elseif heightDifference >= -altitudeTolerance
+      and verticalSpeed < 0.15 then
+      -- Stronger maintenance pulse: keep the bike around Y=180.
+      state.lift = true
+      pulses.lift = 0.12
+      levels.lift = 5
+    end
+  end
+
   if distance <= arrivalDistance then
     state.reverse = speed > 0.5
     if state.reverse then
       pulses.reverse = 0.10
       levels.reverse = 4
     end
+    holdAltitude()
     return state, pulses, 0, levels
   end
 
@@ -352,20 +375,7 @@ local function computeThrusters(relative, distance, heightDifference, speed, ver
     levels.reverse = distance < 45 and 4 or 6
   end
 
-  if heightDifference > verticalDeadzone then
-    state.lift = true
-    pulses.lift = heightDifference > 8 and 0.16 or 0.10
-    levels.lift = heightDifference > 8 and 7 or 5
-  elseif heightDifference >= -1.5 and verticalSpeed < -0.10 then
-    state.lift = true
-    pulses.lift = maintenanceLiftPulse
-    levels.lift = 3
-  elseif heightDifference >= -0.5 then
-    -- Tiny periodic pulse to counter the hover bike's passive sink rate.
-    state.lift = true
-    pulses.lift = maintenanceLiftPulse
-    levels.lift = 3
-  end
+  holdAltitude()
 
   return state, pulses, desiredSpeed, levels
 end
@@ -443,7 +453,9 @@ local function drawDashboard(display, driver, target, destinationName,
     velocity and velocity.source or "NO DATA", colors.gray, colors.black)
 
   safeWrite(display, 1, 8, ("DISTANCE  %.0f blocks"):format(distance), colors.yellow, colors.black)
-  safeWrite(display, 1, 9, ("ALTITUDE  %+.0f blocks"):format(heightDifference), colors.lightBlue, colors.black)
+  safeWrite(display, 1, 9,
+    ("ALTITUDE  Y %.0f / %d"):format(driver.y, cruiseAltitude),
+    colors.lightBlue, colors.black)
   safeWrite(display, 1, 10, "THR: " .. stateText(thrusters, levels), colors.white, colors.black)
   safeWrite(display, math.max(1, width - 18), 6,
     ("TARGET %4.1f b/s"):format(desiredSpeed or 0), colors.gray, colors.black)
@@ -477,7 +489,6 @@ local previousTime
 local lastHeading
 local lastDriver
 local lastTarget
-local cruiseAltitude
 
 allThrustersOff()
 
@@ -510,18 +521,13 @@ while true do
     local dy = target.y - driver.y
     local dz = target.z - driver.z
     local horizontalDistance = math.sqrt(dx * dx + dz * dz)
-    local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local distance = horizontalDistance
     local targetBearing = bearing(dx, dz)
     local heading = lastHeading or targetBearing
     local relative = normalizeAngle(targetBearing - heading)
     local speed = velocity and velocity.speed or 0
     local verticalSpeed = velocity and velocity.y or 0
-    if not cruiseAltitude then cruiseAltitude = driver.y end
-    local controlHeightDifference = dy
-    if horizontalDistance > 35 then
-      local routeAltitude = math.max(cruiseAltitude, target.y + 4)
-      controlHeightDifference = routeAltitude - driver.y
-    end
+    local controlHeightDifference = cruiseAltitude - driver.y
     if not trackerError then
       thrusters, pulses, desiredSpeed, levels =
         computeThrusters(relative, distance, controlHeightDifference, speed, verticalSpeed)
