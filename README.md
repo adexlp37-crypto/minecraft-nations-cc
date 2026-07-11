@@ -1,6 +1,7 @@
-# Minecraft Nations - ComputerCraft
+# Minecraft Nations - Comparator Alarm
 
-ComputerCraft/CC:Tweaked programs for the Minecraft Nations server.
+A single CC:Tweaked security alarm. It watches all six redstone inputs and plays
+a loud repeating speaker alarm whenever any input reaches analog level 15.
 
 ## Installation on a ComputerCraft computer
 
@@ -8,43 +9,21 @@ The GitHub repository must be public and use the `main` branch.
 
 ```text
 wget https://raw.githubusercontent.com/adexlp37-crypto/minecraft-nations-cc/main/computercraft/updater.lua updater
-updater displays
+updater
 ```
 
-Use the same installer on every computer, then choose what that computer should get:
+You can also install it explicitly:
 
 ```text
-updater core
-updater displays
-updater vehicle
-updater scanners
-updater ai
-updater fun
-updater all
+updater alarm
 ```
 
-You can also install single programs:
+Run the alarm:
 
 ```text
-updater hovernav.lua
-updater piano.lua create_stress_monitor.lua
+comparator_alarm
 ```
 
-Run the same command again whenever files on GitHub have changed.
-
-## Packages
-
-- `core`: updater, hello, task manager
-- `displays`: monitor/status programs
-- `vehicle`: HoverNav and vehicle controls
-- `scanners`: radar/player scanner programs
-- `ai`: chatbot and turtle AI programs
-- `fun`: piano/music programs
-- `all`: every ComputerCraft program in this repository
-
-## Adding programs
-
-1. Add the Lua file under `computercraft/`.
-2. Add its filename to `computercraft/manifest.txt` and any package manifest that should install it.
-3. Push the change to the `main` branch.
-4. Run the matching `updater <package>` command in Minecraft.
+Place a comparator so its redstone output enters any side of the computer. Attach
+a speaker directly to another side or through a wired modem. The alarm stops when
+the analog input drops below 15.

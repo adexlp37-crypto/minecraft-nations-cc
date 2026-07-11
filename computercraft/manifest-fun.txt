@@ -1,5 +1,0 @@
-# Music and fun programs.
-updater.lua
-piano.lua
-megalovania.lua
-music_stream.lua

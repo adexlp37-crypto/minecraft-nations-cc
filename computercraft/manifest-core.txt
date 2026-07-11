@@ -1,4 +1,0 @@
-# Basic tools for every ComputerCraft computer.
-updater.lua
-hello.lua
-task_manager.lua

@@ -1,31 +1,26 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "6"
+local version = "7"
 
-local retiredFiles = { "notes.lua", "fieldnav.lua" }
+local retiredFiles = {
+  "notes.lua", "fieldnav.lua", "hello.lua", "piano.lua", "scanner2.lua",
+  "fluid_display.lua", "door_controller.lua", "radar_interface.lua",
+  "player_scanner.lua", "fluid_sender.lua", "fluid_tank_monitor.lua",
+  "music_stream.lua", "task_manager.lua", "create_stress_monitor.lua",
+  "megalovania.lua", "ai_monitor_chatbot.lua", "ai_chatbot.lua",
+  "ai_turtle.lua", "ai_turtle_alt.lua", "chat_monitor.lua",
+  "discord_player_alert.lua", "hovernav.lua"
+}
 
 local packageManifests = {
   all = "manifest.txt",
-  displays = "manifest-displays.txt",
-  vehicle = "manifest-vehicle.txt",
-  scanners = "manifest-scanners.txt",
-  ai = "manifest-ai.txt",
-  fun = "manifest-fun.txt",
-  core = "manifest-core.txt"
+  alarm = "manifest.txt"
 }
 
 local aliases = {
-  display = "displays",
-  monitor = "displays",
-  monitors = "displays",
-  nav = "vehicle",
-  hovernav = "vehicle",
-  scanner = "scanners",
-  scan = "scanners",
-  utils = "core",
-  utility = "core",
-  utilities = "core"
+  comparator = "alarm",
+  security = "alarm"
 }
 
 local cacheBuster = tostring(os.epoch and os.epoch("utc") or os.clock())
@@ -52,10 +47,9 @@ local function printHelp()
   end
   print("")
   print("Examples:")
-  print("  updater displays")
-  print("  updater vehicle")
+  print("  updater alarm")
   print("  updater all")
-  print("  updater hovernav.lua")
+  print("  updater comparator_alarm.lua")
 end
 
 local function download(url, headers)
@@ -145,8 +139,7 @@ local function resolveRequests(args, baseUrl)
   local seen = {}
 
   if #args == 0 then
-    printHelp()
-    return nil
+    args = { "alarm" }
   end
 
   for _, rawRequest in ipairs(args) do

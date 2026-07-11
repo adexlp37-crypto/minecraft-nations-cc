@@ -1,6 +1,0 @@
-# Radar, scanner, and player tracking programs.
-updater.lua
-scanner2.lua
-player_scanner.lua
-radar_interface.lua
-discord_player_alert.lua
