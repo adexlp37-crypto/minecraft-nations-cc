@@ -2,7 +2,7 @@ math.randomseed(os.time())
 
 local preferredMonitorSide = "left"
 local preferredModemSide = "top"
-local updateInterval = 3
+local updateInterval = 1
 local renderInterval = 0.3
 
 local watchlist = {
@@ -10,13 +10,25 @@ local watchlist = {
   ["Lilia_Mer"] = true,
 }
 
-local googleAppUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
+local blueMapBaseUrl = "http://172.255.251.68:25581"
+local blueMapPlayerPaths = {
+  "/players.json",
+  "/live/players.json",
+  "/tiles/players.json",
+  "/maps/world/players.json",
+  "/maps/world/live/players.json",
+  "/maps/world/maps/players.json",
+  "/maps/world/tiles/players.json",
+  "/maps/world/live/markers.json",
+  "/maps/world/markers.json"
+}
 
 local cachedPlayers = {}
 local highlightedPlayers = {}
 local playerClickMap = {}
 local lastStatus = "Starting..."
 local lastUpdate = "never"
+local activePlayerUrl = nil
 
 local blinkState = true
 local colorIndex = 1
@@ -92,11 +104,89 @@ local function normalizePlayers(data)
 
   local normalized = {}
   for _, player in ipairs(players) do
-    if type(player) == "table" and player.name and player.position then
-      normalized[#normalized + 1] = player
+    if type(player) == "table" then
+      local position = player.position or player.pos
+      local x = player.x or (position and position.x)
+      local y = player.y or (position and position.y)
+      local z = player.z or (position and position.z)
+      local name = player.name or player.label or player.uuid
+
+      if name and x and y and z then
+        normalized[#normalized + 1] = {
+          name = tostring(name),
+          position = {
+            x = tonumber(x) or 0,
+            y = tonumber(y) or 0,
+            z = tonumber(z) or 0
+          },
+          rotation = player.rotation
+        }
+      end
     end
   end
   return normalized
+end
+
+local function looksLikePlayerPayload(data)
+  if type(data) ~= "table" then
+    return false
+  end
+
+  if type(data.players) == "table" then
+    return true
+  end
+
+  for _, value in pairs(data) do
+    if type(value) == "table" then
+      local position = value.position or value.pos
+      if value.name and (position or value.x or value.z) then
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
+local function requestJson(url, headers)
+  local httpSuccess, response = pcall(http.get, {
+    url = url,
+    headers = headers,
+    redirect = true
+  })
+
+  if not httpSuccess or not response then
+    return nil, "HTTP error"
+  end
+
+  local readSuccess, rawJson = pcall(response.readAll)
+  response.close()
+
+  if not readSuccess or not rawJson or rawJson == "" then
+    return nil, "Empty response"
+  end
+
+  local jsonSuccess, data = pcall(textutils.unserializeJSON, rawJson)
+  if not jsonSuccess then
+    return nil, "JSON error"
+  end
+
+  return data, nil, rawJson
+end
+
+local function discoverPlayerUrl(headers)
+  for _, path in ipairs(blueMapPlayerPaths) do
+    local epoch = os.epoch and os.epoch("utc") or os.clock()
+    local url = blueMapBaseUrl .. path .. "?cb=" .. tostring(epoch)
+    local data = requestJson(url, headers)
+    local players = normalizePlayers(data)
+    if looksLikePlayerPayload(data) then
+      activePlayerUrl = blueMapBaseUrl .. path
+      return activePlayerUrl, players
+    end
+  end
+
+  return nil, {}
 end
 
 local function internetFetchLoop()
@@ -108,40 +198,36 @@ local function internetFetchLoop()
 
   while true do
     local epoch = os.epoch and os.epoch("utc") or os.clock()
-    local finalUrl = googleAppUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
-    local httpSuccess, response = pcall(http.get, {
-      url = finalUrl,
-      headers = httpHeaders,
-      redirect = true
-    })
 
-    if httpSuccess and response then
-      local readSuccess, rawJson = pcall(response.readAll)
-      response.close()
-
-      if readSuccess and rawJson and rawJson ~= "" then
-        local jsonSuccess, data = pcall(textutils.unserializeJSON, rawJson)
-        local players = normalizePlayers(data)
-
-        if jsonSuccess and #players > 0 then
-          cachedPlayers = players
-          lastStatus = "OK: " .. tostring(#players) .. " players"
-          lastUpdate = os.date("%H:%M:%S")
-          if rednet.isOpen() then
-            rednet.broadcast(rawJson, "bluemap_alarm_system")
-          end
-        elseif jsonSuccess then
-          cachedPlayers = {}
-          lastStatus = "OK: no players"
-          lastUpdate = os.date("%H:%M:%S")
-        else
-          lastStatus = "JSON error"
-        end
+    if not activePlayerUrl then
+      local discoveredUrl, discoveredPlayers = discoverPlayerUrl(httpHeaders)
+      if discoveredUrl then
+        cachedPlayers = discoveredPlayers
+        lastStatus = "BlueMap linked: " .. discoveredUrl:match("/([^/]+%.json)$")
+        lastUpdate = os.date("%H:%M:%S")
       else
-        lastStatus = "Empty response"
+        lastStatus = "BlueMap players not found"
       end
     else
-      lastStatus = "HTTP error"
+      local finalUrl = activePlayerUrl .. "?cb=" .. tostring(epoch) .. tostring(math.random(1, 100000))
+      local data, err, rawJson = requestJson(finalUrl, httpHeaders)
+      local players = normalizePlayers(data)
+
+      if data and #players > 0 then
+        cachedPlayers = players
+        lastStatus = "OK: " .. tostring(#players) .. " players"
+        lastUpdate = os.date("%H:%M:%S")
+        if rednet.isOpen() and rawJson then
+          rednet.broadcast(rawJson, "bluemap_alarm_system")
+        end
+      elseif data then
+        cachedPlayers = {}
+        lastStatus = "OK: no visible players"
+        lastUpdate = os.date("%H:%M:%S")
+      else
+        activePlayerUrl = nil
+        lastStatus = err or "BlueMap error"
+      end
     end
 
     os.sleep(updateInterval)
@@ -163,7 +249,7 @@ local function monitorRenderLoop()
     monitor.setBackgroundColor(colors.black)
     monitor.clear()
 
-    writeLine(monitor, 1, "BlueMap Player Tracker", colors.white)
+    writeLine(monitor, 1, "Direct BlueMap Player Tracker", colors.white)
     writeLine(monitor, 2, "Status: " .. lastStatus .. " | " .. lastUpdate, colors.gray)
 
     local pinnedList = {}
