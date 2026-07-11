@@ -2,7 +2,7 @@ math.randomseed(os.time())
 
 -- === KONFIGURATION ===
 local monitorName = "left"
-local updateInterval = 0.01 -- Sicherer Intervall für Google (Sperren-Schutz)
+local updateInterval = 0.1 -- Sicherer Intervall für Google (Sperren-Schutz)
 local modemSide = "top"   -- Wireless Modem oben
 
 -- DEINE SCHANDLISTE (Trage hier die Spieler für die "sad people"-Box ein)
