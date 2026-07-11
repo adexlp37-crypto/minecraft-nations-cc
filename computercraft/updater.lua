@@ -1,10 +1,62 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "5"
+local version = "6"
+
 local retiredFiles = { "notes.lua", "fieldnav.lua" }
 
+local packageManifests = {
+  all = "manifest.txt",
+  displays = "manifest-displays.txt",
+  vehicle = "manifest-vehicle.txt",
+  scanners = "manifest-scanners.txt",
+  ai = "manifest-ai.txt",
+  fun = "manifest-fun.txt",
+  core = "manifest-core.txt"
+}
+
+local aliases = {
+  display = "displays",
+  monitor = "displays",
+  monitors = "displays",
+  nav = "vehicle",
+  hovernav = "vehicle",
+  scanner = "scanners",
+  scan = "scanners",
+  utils = "core",
+  utility = "core",
+  utilities = "core"
+}
+
 local cacheBuster = tostring(os.epoch and os.epoch("utc") or os.clock())
+
+local function sortedPackageNames()
+  local names = {}
+  for name in pairs(packageManifests) do
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  return names
+end
+
+local function printHelp()
+  print("Minecraft Nations Installer v" .. version)
+  print("")
+  print("Usage:")
+  print("  updater <package>")
+  print("  updater <file.lua> [more.lua]")
+  print("")
+  print("Packages:")
+  for _, name in ipairs(sortedPackageNames()) do
+    print("  " .. name)
+  end
+  print("")
+  print("Examples:")
+  print("  updater displays")
+  print("  updater vehicle")
+  print("  updater all")
+  print("  updater hovernav.lua")
+end
 
 local function download(url, headers)
   local response, err = http.get({
@@ -13,7 +65,7 @@ local function download(url, headers)
     redirect = true
   })
   if not response then
-    return nil, err or "Unbekannter HTTP-Fehler"
+    return nil, err or "Unknown HTTP error"
   end
 
   local body = response.readAll()
@@ -35,7 +87,7 @@ local function latestCommit()
 
   local data = textutils.unserializeJSON(body)
   if type(data) ~= "table" or type(data.sha) ~= "string" then
-    return nil, "Ungueltige Antwort von GitHub"
+    return nil, "Invalid GitHub response"
   end
   return data.sha
 end
@@ -70,39 +122,87 @@ local function install(filename, contents)
   fs.move(temporary, filename)
 end
 
-print("Minecraft Nations Updater v" .. version)
+local function trim(value)
+  return value:match("^%s*(.-)%s*$")
+end
+
+local function addUnique(files, seen, filename)
+  filename = trim(filename)
+  if filename ~= "" and filename:sub(1, 1) ~= "#" and not seen[filename] then
+    seen[filename] = true
+    files[#files + 1] = filename
+  end
+end
+
+local function parseManifest(manifest, files, seen)
+  for line in manifest:gmatch("[^\r\n]+") do
+    addUnique(files, seen, line)
+  end
+end
+
+local function resolveRequests(args, baseUrl)
+  local files = {}
+  local seen = {}
+
+  if #args == 0 then
+    printHelp()
+    return nil
+  end
+
+  for _, rawRequest in ipairs(args) do
+    local request = trim(rawRequest):lower()
+    request = aliases[request] or request
+
+    if request == "help" or request == "-h" or request == "--help" then
+      printHelp()
+      return nil
+    end
+
+    local manifestName = packageManifests[request]
+    if manifestName then
+      print("Loading package: " .. request)
+      local manifest, manifestError = download(baseUrl .. manifestName)
+      if not manifest then
+        error(("Manifest %s could not be loaded: %s"):format(manifestName, manifestError), 0)
+      end
+      parseManifest(manifest, files, seen)
+    else
+      addUnique(files, seen, rawRequest)
+    end
+  end
+
+  if not seen["updater.lua"] then
+    table.insert(files, 1, "updater.lua")
+  end
+
+  if #files == 0 then
+    error("No programs selected.", 0)
+  end
+
+  return files
+end
+
+print("Minecraft Nations Installer v" .. version)
 for _, filename in ipairs(retiredFiles) do
   if fs.exists(filename) then
     fs.delete(filename)
-    print("Entfernt: " .. filename)
+    print("Removed: " .. filename)
   end
 end
-print("Pruefe GitHub-Version...")
+
+print("Checking GitHub version...")
 local commit, commitError = latestCommit()
 if not commit then
-  error("GitHub-Version konnte nicht ermittelt werden: " .. commitError, 0)
+  error("Could not check GitHub version: " .. commitError, 0)
 end
 
 local baseUrl = ("https://raw.githubusercontent.com/%s/%s/%s/computercraft/")
   :format(owner, repository, commit)
 
-print("Stand: " .. commit:sub(1, 7))
-print("Lade Manifest...")
-local manifest, manifestError = download(baseUrl .. "manifest.txt")
-if not manifest then
-  error("Manifest konnte nicht geladen werden: " .. manifestError, 0)
-end
-
-local files = {}
-for line in manifest:gmatch("[^\r\n]+") do
-  local filename = line:match("^%s*(.-)%s*$")
-  if filename ~= "" and filename:sub(1, 1) ~= "#" then
-    files[#files + 1] = filename
-  end
-end
-
-if #files == 0 then
-  error("Das Manifest enthaelt keine Programme.", 0)
+print("Revision: " .. commit:sub(1, 7))
+local files = resolveRequests({ ... }, baseUrl)
+if not files then
+  return
 end
 
 local selfUpdated = false
@@ -110,12 +210,12 @@ for index, filename in ipairs(files) do
   write(("[%d/%d] %s ... "):format(index, #files, filename))
   local contents, err = download(baseUrl .. filename)
   if not contents then
-    print("FEHLER")
-    error(("Download von %s fehlgeschlagen: %s"):format(filename, err), 0)
+    print("ERROR")
+    error(("Download of %s failed: %s"):format(filename, err), 0)
   end
 
   if readFile(filename) == contents then
-    print("AKTUELL")
+    print("CURRENT")
   else
     install(filename, contents)
     if filename == "updater.lua" then
@@ -125,9 +225,7 @@ for index, filename in ipairs(files) do
   end
 end
 
-print("Update abgeschlossen.")
+print("Install complete.")
 if selfUpdated then
-  print("Updater wurde erneuert - starte automatisch neu.")
-  sleep(0.5)
-  shell.run("updater")
+  print("Installer was updated. Run your command again to install the selected package.")
 end

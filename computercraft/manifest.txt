@@ -1,4 +1,4 @@
-# One repository-relative ComputerCraft filename per line.
+# Everything package. One repository-relative ComputerCraft filename per line.
 updater.lua
 hello.lua
 piano.lua

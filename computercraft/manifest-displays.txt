@@ -1,0 +1,7 @@
+# Monitor and base display programs.
+updater.lua
+fluid_display.lua
+fluid_tank_monitor.lua
+create_stress_monitor.lua
+chat_monitor.lua
+task_manager.lua

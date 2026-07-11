@@ -1,0 +1,6 @@
+# AI and chat automation programs.
+updater.lua
+ai_chatbot.lua
+ai_monitor_chatbot.lua
+ai_turtle.lua
+ai_turtle_alt.lua
