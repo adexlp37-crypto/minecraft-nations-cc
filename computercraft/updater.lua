@@ -10,17 +10,20 @@ local retiredFiles = {
   "music_stream.lua", "task_manager.lua", "create_stress_monitor.lua",
   "megalovania.lua", "ai_monitor_chatbot.lua", "ai_chatbot.lua",
   "ai_turtle.lua", "ai_turtle_alt.lua", "chat_monitor.lua",
-  "discord_player_alert.lua", "hovernav.lua"
+  "discord_player_alert.lua"
 }
 
 local packageManifests = {
   all = "manifest.txt",
-  alarm = "manifest.txt"
+  alarm = "manifest-alarm.txt",
+  navigation = "manifest-navigation.txt"
 }
 
 local aliases = {
   comparator = "alarm",
-  security = "alarm"
+  security = "alarm",
+  nav = "navigation",
+  hovernav = "navigation"
 }
 
 local cacheBuster = tostring(os.epoch and os.epoch("utc") or os.clock())
@@ -48,6 +51,7 @@ local function printHelp()
   print("")
   print("Examples:")
   print("  updater alarm")
+  print("  updater navigation")
   print("  updater all")
   print("  updater comparator_alarm.lua")
 end
