@@ -1,4 +1,5 @@
 local proxyUrl = "https://script.google.com/macros/s/AKfycbxw_loC2T0hdhyFTXam2AObNn5Tkz6bPTeAR2SoRMOBiEXaS0fYM1sQBusM0_rNAkRiLA/exec"
+local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
 local refreshSeconds = 10
 local animationSeconds = 0.5
 
@@ -78,7 +79,11 @@ if monitor then monitor.setTextScale(1) end
 local data, lastError, page = nil, nil, 1
 local selectedName, detailPage = nil, 1
 local rowTeams = {}
+local rowPlayers = {}
+local selectedPlayerName, playerProfile, playerError = nil, nil, nil
+local profileCache = {}
 local animationFrame = 0
+local draw
 
 local function playClick(kind)
   if not speaker then return end
@@ -124,6 +129,45 @@ local function selectedTeam()
   for _, team in ipairs(data.teams) do
     if tostring(team.name) == selectedName then return team end
   end
+end
+
+local function accountAge(createdAt)
+  local year, month, day = tostring(createdAt or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+  if not year then return nil end
+  local now = os.date("*t")
+  local age = now.year - tonumber(year)
+  if now.month < tonumber(month) or
+      (now.month == tonumber(month) and now.day < tonumber(day)) then age = age - 1 end
+  return math.max(0, age)
+end
+
+local function fetchProfile(name)
+  local cached = profileCache[name:lower()]
+  local now = os.clock()
+  if cached and now - cached.time < 300 then return cached.data, cached.error end
+  local ok, response, err = pcall(http.get, {
+    url=profileApiUrl .. textutils.urlEncode(name), redirect=true, timeout=12,
+    headers={ ["Accept"]="application/json", ["User-Agent"]="CC-Nations-Dashboard/1.0" }
+  })
+  if not ok then return nil, tostring(response) end
+  if not response then return nil, tostring(err or "profile request failed") end
+  local body = response.readAll()
+  response.close()
+  local profile = textutils.unserializeJSON(body)
+  if type(profile) ~= "table" or not profile.uuid then
+    local message = type(profile) == "table" and profile.reason or "invalid profile response"
+    profileCache[name:lower()] = { time=now, error=tostring(message) }
+    return nil, tostring(message)
+  end
+  profileCache[name:lower()] = { time=now, data=profile }
+  return profile
+end
+
+local function openPlayer(name)
+  selectedPlayerName, playerProfile, playerError = name, nil, nil
+  draw()
+  playerProfile, playerError = fetchProfile(name)
+  draw()
 end
 
 local function drawHeader(title, accent)
@@ -182,6 +226,7 @@ end
 local function drawDetails(team)
   local width, height = target.getSize()
   local teamColor = nearestColor(target, team.color)
+  rowPlayers = {}
   target.setBackgroundColor(colors.black)
   target.clear()
   drawBackButton()
@@ -227,6 +272,7 @@ local function drawDetails(team)
     if not name then break end
     local isOnline = online[name:lower()] == true
     local y = memberHeadingY + row
+    rowPlayers[y] = name
     writeAt(target, 2, y, isOnline and ">" or "-",
       isOnline and colors.lime or colors.gray, colors.black)
     writeAt(target, 5, y, name,
@@ -238,9 +284,64 @@ local function drawDetails(team)
   drawPageButtons(height, detailPage, pages)
 end
 
-local function draw()
+local function drawPlayerProfile(team)
+  local width, height = target.getSize()
+  local teamColor = team and nearestColor(target, team.color) or colors.cyan
+  target.setBackgroundColor(colors.black)
+  target.clear()
+  drawBackButton()
+  writeAt(target, 12, 1, "PLAYER PROFILE", colors.white, colors.black)
+  drawAnimatedLine(2, teamColor)
+  writeAt(target, 2, 3, selectedPlayerName or "UNKNOWN", teamColor, colors.black)
+
+  if not playerProfile and not playerError then
+    writeAt(target, 2, 6, "LOADING PROFILE...", colors.yellow, colors.black)
+    return
+  end
+  if playerError then
+    writeAt(target, 2, 6, "PROFILE UNAVAILABLE", colors.red, colors.black)
+    writeAt(target, 2, 8, playerError, colors.orange, colors.black)
+    writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
+    return
+  end
+
+  local created = playerProfile.created_at
+  local age = accountAge(created)
+  writeAt(target, 2, 5, "CURRENT  " .. tostring(playerProfile.username or selectedPlayerName),
+    colors.white, colors.black)
+  writeAt(target, 2, 6, "CREATED  " .. (created and tostring(created) or "UNKNOWN"),
+    created and colors.lime or colors.gray, colors.black)
+  writeAt(target, 2, 7, "AGE      " .. (age and (tostring(age) .. " years") or "UNKNOWN"),
+    age and colors.lightBlue or colors.gray, colors.black)
+  writeAt(target, 2, 8, "UUID     " .. tostring(playerProfile.uuid or "UNKNOWN"),
+    colors.lightGray, colors.black)
+  writeAt(target, 2, 10, "KNOWN USERNAMES", colors.white, colors.black)
+
+  local history = type(playerProfile.username_history) == "table" and
+    playerProfile.username_history or {}
+  local rows = math.max(1, height - 11)
+  if #history == 0 then
+    writeAt(target, 2, 11, "No public history available", colors.gray, colors.black)
+  else
+    for index = 1, math.min(#history, rows) do
+      local item = history[index]
+      local username = type(item) == "table" and item.username or tostring(item)
+      local changed = type(item) == "table" and item.changed_at or nil
+      writeAt(target, 2, index + 10, index .. ". " .. tostring(username),
+        index == #history and colors.white or colors.lightGray, colors.black)
+      if changed and width > 38 then
+        writeAt(target, width - 11, index + 10, tostring(changed):sub(1, 10), colors.gray, colors.black)
+      end
+    end
+  end
+  writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
+end
+
+draw = function()
   local team = selectedTeam()
-  if team then drawDetails(team) else drawRanking() end
+  if selectedPlayerName then drawPlayerProfile(team)
+  elseif team then drawDetails(team)
+  else drawRanking() end
 end
 
 local function animate()
@@ -273,7 +374,14 @@ while true do
     animate()
     animationTimer = os.startTimer(animationSeconds)
   elseif event == "key" then
-    if selectedName then
+    if selectedPlayerName then
+      if value == keys.left or value == keys.backspace then
+        selectedPlayerName, playerProfile, playerError = nil, nil, nil
+      elseif value == keys.r then
+        profileCache[selectedPlayerName:lower()] = nil
+        openPlayer(selectedPlayerName)
+      end
+    elseif selectedName then
       if value == keys.left or value == keys.backspace then selectedName, detailPage = nil, 1
       elseif value == keys.right or value == keys.pageDown or value == keys.down then detailPage = detailPage + 1
       elseif value == keys.pageUp or value == keys.up then detailPage = detailPage - 1
@@ -287,10 +395,20 @@ while true do
   elseif event == "monitor_touch" then
     local touchX, touchY = x, y
     local _, height = target.getSize()
-    if selectedName then
+    if selectedPlayerName then
+      if (touchY == 1 and touchX <= 9) or touchY == height then
+        playClick("back")
+        selectedPlayerName, playerProfile, playerError = nil, nil, nil
+      else
+        playClick("page")
+      end
+    elseif selectedName then
       if touchY == 1 and touchX <= 9 then
         playClick("back")
         selectedName, detailPage = nil, 1
+      elseif rowPlayers[touchY] then
+        playClick("open")
+        openPlayer(rowPlayers[touchY])
       elseif touchY == height and touchX <= 7 then
         playClick("page")
         detailPage = detailPage - 1
@@ -317,10 +435,20 @@ while true do
   elseif event == "mouse_click" then
     local clickX, clickY = x, y
     local _, height = target.getSize()
-    if selectedName then
+    if selectedPlayerName then
+      if (clickY == 1 and clickX <= 9) or clickY == height then
+        playClick("back")
+        selectedPlayerName, playerProfile, playerError = nil, nil, nil
+      else
+        playClick("page")
+      end
+    elseif selectedName then
       if clickY == 1 and clickX <= 9 then
         playClick("back")
         selectedName, detailPage = nil, 1
+      elseif rowPlayers[clickY] then
+        playClick("open")
+        openPlayer(rowPlayers[clickY])
       elseif clickY == height and clickX <= 7 then
         playClick("page")
         detailPage = detailPage - 1
