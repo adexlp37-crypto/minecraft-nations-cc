@@ -1,6 +1,7 @@
 local proxyUrl = "https://script.google.com/macros/s/AKfycbyXcO7DJgloCLhteQixcPabIXHQTANvCyrMaOrLWjava--_iqFB-ItfgLTwbBpHzOV3/exec"
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local refreshSeconds = 10
+local playerRefreshSeconds = 1
+local teamRefreshSeconds = 600
 local animationSeconds = 0.5
 local lastSeenFile = ".team_dashboard_last_seen"
 
@@ -78,6 +79,7 @@ local target = monitor or term
 if monitor then monitor.setTextScale(1) end
 
 local data, lastError, page = nil, nil, 1
+local lastPlayerUpdate = nil
 local viewMode = "list"
 local awayPage = 1
 local selectedName, detailPage = nil, 1
@@ -88,8 +90,10 @@ local mapCells = {}
 local selectedPlayerName, playerProfile, playerError = nil, nil, nil
 local profileCache = {}
 local lastSeen = {}
+local lastSeenSavedAt = 0
 local animationFrame = 0
 local draw
+local requestProfile
 
 local function loadLastSeen()
   if not fs.exists(lastSeenFile) then return end
@@ -121,7 +125,10 @@ local function rememberOnlinePlayers(newData)
       changed = true
     end
   end
-  if changed then saveLastSeen() end
+  if changed and now - lastSeenSavedAt >= 30000 then
+    saveLastSeen()
+    lastSeenSavedAt = now
+  end
 end
 
 local function playerIsOnline(team, name)
@@ -258,8 +265,7 @@ end
 local function openPlayer(name)
   selectedPlayerName, playerProfile, playerError = name, nil, nil
   draw()
-  playerProfile, playerError = fetchProfile(name)
-  draw()
+  requestProfile(name)
 end
 
 local function drawHeader(title, accent)
@@ -267,6 +273,13 @@ local function drawHeader(title, accent)
   target.setBackgroundColor(colors.black)
   target.clear()
   writeAt(target, 2, 1, title, colors.white, colors.black)
+  if width > 42 then
+    local liveAge = lastPlayerUpdate and os.epoch and
+      math.max(0, math.floor((os.epoch("utc") - lastPlayerUpdate) / 1000)) or nil
+    writeAt(target, width - 17, 1,
+      liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...",
+      liveAge and liveAge <= 5 and colors.lime or colors.orange, colors.black)
+  end
   if width > 30 then
     writeAt(target, width - 7, 1, os.date("%H:%M"), colors.gray, colors.black)
   end
@@ -620,26 +633,210 @@ local function animate()
   end
 end
 
-local function update()
-  local newData, err = fetchData()
-  if newData then
-    rememberOnlinePlayers(newData)
-    data, lastError = newData, nil
-  else lastError = err end
+local pendingRequests = { players=false, teams=false }
+local requestKinds = {}
+local profileRequests = {}
+
+local function sortTeams()
+  if not data or type(data.teams) ~= "table" then return end
+  table.sort(data.teams, function(a, b)
+    local ao, bo = tonumber(a.online) or 0, tonumber(b.online) or 0
+    if ao ~= bo then return ao > bo end
+    local am, bm = tonumber(a.members) or 0, tonumber(b.members) or 0
+    if am ~= bm then return am > bm end
+    return tostring(a.name):lower() < tostring(b.name):lower()
+  end)
+end
+
+local function applyPlayers(players)
+  if not data or type(data.teams) ~= "table" or type(players) ~= "table" then return end
+  data.players = players
+  local teams = {}
+  for _, team in ipairs(data.teams) do
+    local key = tostring(team.name or ""):lower()
+    teams[key] = team
+    team.onlineNames, team.atBaseNames = {}, {}
+    team.online, team.atBase, team.away = 0, 0, 0
+  end
+  for _, player in ipairs(players) do
+    local team = teams[tostring(player.team or ""):lower()]
+    if team then
+      team.online = team.online + 1
+      team.onlineNames[#team.onlineNames + 1] = tostring(player.name or "?")
+      if player.inOwnBase == true then
+        team.atBase = team.atBase + 1
+        team.atBaseNames[#team.atBaseNames + 1] = tostring(player.name or "?")
+      end
+    end
+  end
+  for _, team in ipairs(data.teams) do team.away = math.max(0, team.online - team.atBase) end
+
+  if type(data.bases) == "table" then
+    for _, base in ipairs(data.bases) do
+      local team = teams[tostring(base.team or ""):lower()]
+      base.online = team and team.online or 0
+      base.atBase, base.playersAtBase = 0, {}
+      for _, player in ipairs(players) do
+        if tostring(player.team or ""):lower() == tostring(base.team or ""):lower() and
+            player.inOwnBase == true and
+            tonumber(player.ownBaseRegion) == tonumber(base.region) then
+          base.atBase = base.atBase + 1
+          base.playersAtBase[#base.playersAtBase + 1] = tostring(player.name or "?")
+        end
+      end
+    end
+  end
+  sortTeams()
+  rememberOnlinePlayers(data)
+end
+
+local function requestProxy(kind)
+  if pendingRequests[kind] then return end
+  local separator = proxyUrl:find("?", 1, true) and "&" or "?"
+  local stamp = tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
+  local url = proxyUrl .. separator .. "mode=" .. kind .. "&dashboard=" .. stamp
+  local callOk, ok, err = pcall(http.request, {
+    url=url,
+    redirect=true,
+    timeout=kind == "players" and 10 or 35,
+    headers={ ["Accept"]="application/json", ["Cache-Control"]="no-cache" }
+  })
+  if callOk and ok then
+    pendingRequests[kind] = true
+    requestKinds[url] = kind
+  else
+    lastError = tostring((not callOk and ok) or err or (kind .. " request failed"))
+  end
+end
+
+requestProfile = function(name)
+  local key = tostring(name):lower()
+  local cached = profileCache[key]
+  local now = os.clock()
+  if cached and now - cached.time < 300 then
+    playerProfile, playerError = cached.data, cached.error
+    draw()
+    return
+  end
+  local url = profileApiUrl .. textutils.urlEncode(name)
+  local ok, started, err = pcall(http.request, {
+    url=url,
+    redirect=true,
+    timeout=12,
+    headers={ ["Accept"]="application/json", ["User-Agent"]="CC-Nations-Dashboard/2.0" }
+  })
+  if not ok or not started then
+    playerError = tostring((not ok and started) or err or "profile request failed")
+    profileCache[key] = { time=now, error=playerError }
+    draw()
+    return
+  end
+  profileRequests[url] = tostring(name)
+end
+
+local function handleProfileSuccess(url, response)
+  local name = profileRequests[url]
+  profileRequests[url] = nil
+  local body = response.readAll()
+  response.close()
+  local profile = textutils.unserializeJSON(body)
+  local now = os.clock()
+  local profileData, profileError
+  if type(profile) ~= "table" or not profile.uuid then
+    profileError = type(profile) == "table" and
+      tostring(profile.reason or "invalid profile response") or "invalid profile response"
+    profileCache[tostring(name):lower()] = { time=now, error=profileError }
+  else
+    profileData = profile
+    profileCache[tostring(name):lower()] = { time=now, data=profileData }
+  end
+  if selectedPlayerName and tostring(selectedPlayerName):lower() == tostring(name):lower() then
+    playerProfile, playerError = profileData, profileError
+    draw()
+  end
+end
+
+local function handleProfileFailure(url, err, response)
+  local name = profileRequests[url]
+  profileRequests[url] = nil
+  if response then pcall(response.close) end
+  if not name then return end
+  local message = tostring(err or "profile request failed")
+  profileCache[tostring(name):lower()] = { time=os.clock(), error=message }
+  if selectedPlayerName and tostring(selectedPlayerName):lower() == tostring(name):lower() then
+    playerProfile, playerError = nil, message
+    draw()
+  end
+end
+
+local function handleProxySuccess(url, response)
+  local kind = requestKinds[url]
+  requestKinds[url] = nil
+  local body = response.readAll()
+  response.close()
+  local payload = textutils.unserializeJSON(body)
+  if not kind then kind = type(payload) == "table" and type(payload.teams) == "table" and "teams" or "players" end
+  pendingRequests[kind] = false
+  if type(payload) ~= "table" then
+    lastError = "Proxy returned invalid JSON"
+  elseif payload.error then
+    lastError = "Proxy: " .. tostring(payload.error)
+  elseif kind == "teams" then
+    if type(payload.teams) ~= "table" then
+      lastError = "Proxy has no teams field. Deploy the new proxy code."
+    else
+      data, lastError = payload, nil
+      lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
+      sortTeams()
+      rememberOnlinePlayers(data)
+    end
+  elseif type(payload.players) == "table" then
+    applyPlayers(payload.players)
+    lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
+    lastError = nil
+  end
   draw()
 end
 
-update()
-local timer = os.startTimer(refreshSeconds)
+local function handleProxyFailure(url, err, response)
+  local kind = requestKinds[url] or
+    (tostring(url):find("mode=players", 1, true) and "players") or
+    (tostring(url):find("mode=teams", 1, true) and "teams")
+  requestKinds[url] = nil
+  if kind then pendingRequests[kind] = false
+  else pendingRequests.players, pendingRequests.teams = false, false end
+  if response then pcall(response.close) end
+  lastError = tostring(err or "HTTP request failed")
+  draw()
+end
+
+local function update()
+  requestProxy("teams")
+end
+
+lastError = "Loading live data..."
+draw()
+requestProxy("teams")
+local playerTimer = os.startTimer(playerRefreshSeconds)
+local teamTimer = os.startTimer(teamRefreshSeconds)
 local animationTimer = os.startTimer(animationSeconds)
 while true do
   local event, value, x, y = os.pullEvent()
-  if event == "timer" and value == timer then
-    update()
-    timer = os.startTimer(refreshSeconds)
+  if event == "timer" and value == playerTimer then
+    requestProxy("players")
+    playerTimer = os.startTimer(playerRefreshSeconds)
+  elseif event == "timer" and value == teamTimer then
+    requestProxy("teams")
+    teamTimer = os.startTimer(teamRefreshSeconds)
   elseif event == "timer" and value == animationTimer then
     animate()
     animationTimer = os.startTimer(animationSeconds)
+  elseif event == "http_success" then
+    if profileRequests[value] then handleProfileSuccess(value, x)
+    else handleProxySuccess(value, x) end
+  elseif event == "http_failure" then
+    if profileRequests[value] then handleProfileFailure(value, x, y)
+    else handleProxyFailure(value, x, y) end
   elseif event == "key" then
     if selectedPlayerName then
       if value == keys.left or value == keys.backspace then

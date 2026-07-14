@@ -14,6 +14,7 @@ const TEAM_PROPERTY_META = "BLUEMAP_TEAM_DATA_V4_META";
 const TEAM_PROPERTY_PREFIX = "BLUEMAP_TEAM_DATA_V4_";
 const PROPERTY_CHUNK_SIZE = 8000;
 const MEMORY_CACHE_SECONDS = 21600;
+const TEAM_REFRESH_MILLISECONDS = 10 * 60 * 1000;
 
 function fetchJson_(path) {
   const response = UrlFetchApp.fetch(BLUEMAP_BASE + path, {
@@ -184,10 +185,13 @@ function loadPersistentTeams_() {
   return stored;
 }
 
-function teamDefinitions_(forceRefresh) {
+function teamDefinitions_(forceRefresh, allowStale) {
   if (!forceRefresh) {
     const stored = loadPersistentTeams_();
-    if (stored) return stored;
+    if (stored) {
+      const age = Date.now() - Date.parse(stored.updatedAt || 0);
+      if (allowStale || age < TEAM_REFRESH_MILLISECONDS) return stored;
+    }
   }
 
   const lock = LockService.getScriptLock();
@@ -195,7 +199,10 @@ function teamDefinitions_(forceRefresh) {
   try {
     if (!forceRefresh) {
       const stored = loadPersistentTeams_();
-      if (stored) return stored;
+      if (stored) {
+        const age = Date.now() - Date.parse(stored.updatedAt || 0);
+        if (allowStale || age < TEAM_REFRESH_MILLISECONDS) return stored;
+      }
     }
     const teams = parseTeams_(fetchJson_("/maps/world/live/markers.json"));
     const updatedAt = savePersistentTeams_(teams);
@@ -216,8 +223,11 @@ function insideRegion_(position, region) {
 
 function doGet(e) {
   try {
+    const mode = e && e.parameter && String(e.parameter.mode || "full");
     const forceRefresh = e && e.parameter && e.parameter.refreshTeams === "1";
-    const stored = teamDefinitions_(forceRefresh);
+    // Player requests always use the last stored team snapshot. They never
+    // download markers.json and therefore remain small and fast.
+    const stored = teamDefinitions_(forceRefresh, mode === "players");
     const playerData = fetchJson_("/maps/world/live/players.json");
     const rawPlayers = Array.isArray(playerData.players) ? playerData.players : [];
     const onlineByName = {};
@@ -276,6 +286,14 @@ function doGet(e) {
     players.forEach(function(player) {
       enrichedByName[String(player.name || "").toLowerCase()] = player;
     });
+
+    if (mode === "players") {
+      return ContentService.createTextOutput(JSON.stringify({
+        players: players,
+        generatedAt: new Date().toISOString(),
+        teamDataUpdatedAt: stored.updatedAt
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
 
     const bases = [];
     const teams = stored.teams.map(function(definition) {
