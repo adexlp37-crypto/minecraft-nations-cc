@@ -79,9 +79,11 @@ if monitor then monitor.setTextScale(1) end
 
 local data, lastError, page = nil, nil, 1
 local viewMode = "list"
+local awayPage = 1
 local selectedName, detailPage = nil, 1
 local rowTeams = {}
 local rowPlayers = {}
+local rowAwayPlayers = {}
 local mapCells = {}
 local selectedPlayerName, playerProfile, playerError = nil, nil, nil
 local profileCache = {}
@@ -200,6 +202,27 @@ local function selectedPlayerData(name)
   end
 end
 
+local function teamByName(name)
+  if not data or type(data.teams) ~= "table" then return nil end
+  for _, team in ipairs(data.teams) do
+    if tostring(team.name or ""):lower() == tostring(name or ""):lower() then return team end
+  end
+end
+
+local function awayPlayers()
+  local result = {}
+  if not data or type(data.players) ~= "table" then return result end
+  for _, player in ipairs(data.players) do
+    if player.team and player.inOwnBase == false then result[#result + 1] = player end
+  end
+  table.sort(result, function(a, b)
+    local at, bt = tostring(a.team or ""):lower(), tostring(b.team or ""):lower()
+    if at ~= bt then return at < bt end
+    return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+  end)
+  return result
+end
+
 local function accountAge(createdAt)
   local year, month, day = tostring(createdAt or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
   if not year then return nil end
@@ -291,6 +314,10 @@ local function drawRanking()
 
   drawPageButtons(height, page, pageCount)
   if width >= 25 then writeAt(target, 18, height, " MAP > ", colors.black, colors.cyan) end
+  if width >= 35 then
+    writeAt(target, 26, height, " AWAY > ", colors.black,
+      #awayPlayers() > 0 and colors.orange or colors.gray)
+  end
 end
 
 local function drawMap()
@@ -307,10 +334,21 @@ local function drawMap()
     return
   end
 
+  local primaryBases = {}
+  for _, base in ipairs(bases) do
+    local key = tostring(base.team or ""):lower()
+    if not primaryBases[key] or
+        (tonumber(base.chunks) or 0) > (tonumber(primaryBases[key].chunks) or 0) then
+      primaryBases[key] = base
+    end
+  end
+  local visibleBases = {}
+  for _, base in pairs(primaryBases) do visibleBases[#visibleBases + 1] = base end
+
   local left, right = 2, math.max(2, width - 1)
   local top, bottom = 4, math.max(4, height - 2)
   local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
-  for _, base in ipairs(bases) do
+  for _, base in ipairs(visibleBases) do
     minX = math.min(minX, tonumber(base.minX) or tonumber(base.x) or 0)
     maxX = math.max(maxX, tonumber(base.maxX) or tonumber(base.x) or 0)
     minZ = math.min(minZ, tonumber(base.minZ) or tonumber(base.z) or 0)
@@ -327,27 +365,33 @@ local function drawMap()
       top + math.floor(((tonumber(value) or minZ) - minZ) / spanZ * plotHeight + 0.5)))
   end
 
-  writeAt(target, 2, 3, "NUMBER = PLAYERS CURRENTLY AT BASE", colors.gray, colors.black)
-  for _, base in ipairs(bases) do
-    local x1, x2 = screenX(base.minX), screenX(base.maxX)
-    local y1, y2 = screenY(base.minZ), screenY(base.maxZ)
-    if x2 < x1 then x1, x2 = x2, x1 end
-    if y2 < y1 then y1, y2 = y2, y1 end
-    x2 = math.max(x1, x2)
-    y2 = math.max(y1, y2)
-    local baseColor = nearestColor(target, base.color)
-    for y = y1, y2 do
+  writeAt(target, 2, 3, "[N] AT BASE   !N AWAY   . OFFLINE", colors.gray, colors.black)
+
+  -- Quiet background: only one small dot for each offline team's main base.
+  for _, base in ipairs(visibleBases) do
+    local team = teamByName(base.team)
+    if not team or (tonumber(team.online) or 0) == 0 then
+      local x, y = screenX(base.x), screenY(base.z)
       mapCells[y] = mapCells[y] or {}
-      writeAt(target, x1, y, string.rep(" ", math.max(1, x2 - x1 + 1)), colors.black, baseColor)
-      for x = x1, x2 do mapCells[y][x] = base end
+      writeAt(target, x, y, ".", nearestColor(target, base.color), colors.black)
+      mapCells[y][x] = base
     end
-    local centerX = screenX(base.x)
-    local centerY = screenY(base.z)
-    local count = tostring(tonumber(base.atBase) or 0)
-    local labelX = math.max(left, math.min(right - #count + 1, centerX - math.floor(#count / 2)))
-    writeAt(target, labelX, centerY, count, colors.white, colors.black)
-    mapCells[centerY] = mapCells[centerY] or {}
-    for x = labelX, math.min(right, labelX + #count - 1) do mapCells[centerY][x] = base end
+  end
+
+  -- Active teams are drawn last and therefore stay readable.
+  for _, base in ipairs(visibleBases) do
+    local team = teamByName(base.team)
+    if team and (tonumber(team.online) or 0) > 0 then
+      local centerX, centerY = screenX(base.x), screenY(base.z)
+      local label = "[" .. tostring(tonumber(team.atBase) or 0) .. "]"
+      if (tonumber(team.away) or 0) > 0 then label = label .. "!" .. tostring(team.away) end
+      local x1 = math.max(left, math.min(right - #label + 1, centerX - math.floor(#label / 2)))
+      local baseColor = nearestColor(target, base.color)
+      writeAt(target, x1, centerY, label,
+        (tonumber(team.away) or 0) > 0 and colors.orange or colors.white, baseColor)
+      mapCells[centerY] = mapCells[centerY] or {}
+      for x = x1, math.min(right, x1 + #label - 1) do mapCells[centerY][x] = base end
+    end
   end
 
   local totalAtBase, totalOnline = 0, 0
@@ -356,8 +400,60 @@ local function drawMap()
     totalOnline = totalOnline + (tonumber(team.online) or 0)
   end
   writeAt(target, 1, height, "< LIST ", colors.black, colors.cyan)
-  writeAt(target, 10, height,
+  writeAt(target, 9, height, " AWAY > ", colors.black,
+    #awayPlayers() > 0 and colors.orange or colors.gray)
+  writeAt(target, 19, height,
     "AT BASE " .. totalAtBase .. " / ONLINE " .. totalOnline, colors.lightGray, colors.black)
+end
+
+local function drawAwayPlayers()
+  local width, height = target.getSize()
+  drawHeader("NATIONS  /  AWAY PLAYERS", colors.orange)
+  rowTeams = {}
+  mapCells = {}
+  rowAwayPlayers = {}
+  local players = awayPlayers()
+  local rows = math.max(1, height - 5)
+  local pages = math.max(1, math.ceil(#players / rows))
+  awayPage = math.max(1, math.min(awayPage, pages))
+  local first = (awayPage - 1) * rows + 1
+
+  writeAt(target, 2, 3, "PLAYER", colors.gray, colors.black)
+  if width >= 38 then
+    writeAt(target, 18, 3, "TEAM", colors.gray, colors.black)
+    writeAt(target, math.max(31, width - 16), 3, "X / Z", colors.gray, colors.black)
+  else
+    writeAt(target, math.max(18, width - 13), 3, "X / Z", colors.gray, colors.black)
+  end
+
+  if #players == 0 then
+    writeAt(target, 2, 6, "ALL ONLINE MEMBERS ARE AT BASE", colors.lime, colors.black)
+  end
+  for row = 1, rows do
+    local player = players[first + row - 1]
+    if not player then break end
+    local y = row + 3
+    rowAwayPlayers[y] = player
+    local position = type(player.position) == "table" and player.position or {}
+    local coordinates = tostring(math.floor(tonumber(position.x) or 0)) .. " / " ..
+      tostring(math.floor(tonumber(position.z) or 0))
+    local locationColor = player.locationStatus == "FOREIGN_BASE" and colors.red or colors.orange
+    writeAt(target, 2, y, tostring(player.name or "?"):sub(1, 14), colors.white, colors.black)
+    if width >= 38 then
+      writeAt(target, 18, y, tostring(player.team or "UNKNOWN"):sub(1, math.max(3, width - 36)),
+        colors.lightGray, colors.black)
+      writeAt(target, math.max(31, width - 16), y, coordinates, locationColor, colors.black)
+    else
+      writeAt(target, math.max(18, width - 13), y, coordinates, locationColor, colors.black)
+    end
+  end
+
+  writeAt(target, 1, height, "< LIST ", colors.black, colors.cyan)
+  writeAt(target, 9, height, " MAP > ", colors.black, colors.lime)
+  writeAt(target, 18, height, "<", colors.white, awayPage > 1 and colors.gray or colors.black)
+  writeAt(target, 22, height, ">", colors.white, awayPage < pages and colors.gray or colors.black)
+  local status = tostring(awayPage) .. "/" .. tostring(pages) .. "  " .. #players .. " AWAY"
+  writeAt(target, math.max(25, width - #status + 1), height, status, colors.orange, colors.black)
 end
 
 local function drawDetails(team)
@@ -419,9 +515,12 @@ local function drawDetails(team)
       isOnline and colors.lime or colors.gray, colors.black)
     writeAt(target, 5, y, name,
       isOnline and colors.white or colors.lightGray, colors.black)
-    writeAt(target, math.max(8, width - 8), y,
-      isOnline and "ONLINE" or "OFFLINE",
-      isOnline and colors.lime or colors.gray, colors.black)
+    local livePlayer = isOnline and selectedPlayerData(name) or nil
+    local memberStatus = not isOnline and "OFFLINE" or
+      (livePlayer and livePlayer.inOwnBase == false and "AWAY" or "BASE")
+    writeAt(target, math.max(8, width - 8), y, memberStatus,
+      memberStatus == "AWAY" and colors.orange or
+        (isOnline and colors.lime or colors.gray), colors.black)
   end
   drawPageButtons(height, detailPage, pages)
 end
@@ -448,45 +547,49 @@ local function drawPlayerProfile(team)
         ("IN " .. tostring(livePlayer.insideTeam or "FOREIGN BASE")) or "OUTSIDE BASES"
     writeAt(target, 2, 7, "LOCATION   " .. location,
       livePlayer.locationStatus == "OWN_BASE" and colors.lime or colors.orange, colors.black)
+    local position = type(livePlayer.position) == "table" and livePlayer.position or {}
+    writeAt(target, 2, 8,
+      "POSITION   X " .. tostring(math.floor(tonumber(position.x) or 0)) ..
+      "  Z " .. tostring(math.floor(tonumber(position.z) or 0)), colors.lightGray, colors.black)
   end
 
   if not playerProfile and not playerError then
-    writeAt(target, 2, 8, "LOADING PROFILE...", colors.yellow, colors.black)
+    writeAt(target, 2, 10, "LOADING PROFILE...", colors.yellow, colors.black)
     return
   end
   if playerError then
-    writeAt(target, 2, 8, "PROFILE UNAVAILABLE", colors.red, colors.black)
-    writeAt(target, 2, 10, playerError, colors.orange, colors.black)
+    writeAt(target, 2, 10, "PROFILE UNAVAILABLE", colors.red, colors.black)
+    writeAt(target, 2, 12, playerError, colors.orange, colors.black)
     writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
     return
   end
 
   local created = playerProfile.created_at
   local age = accountAge(created)
-  writeAt(target, 2, 8, "CURRENT  " .. tostring(playerProfile.username or selectedPlayerName),
+  writeAt(target, 2, 10, "CURRENT  " .. tostring(playerProfile.username or selectedPlayerName),
     colors.white, colors.black)
-  writeAt(target, 2, 9, "CREATED  " .. (created and tostring(created) or "UNKNOWN"),
+  writeAt(target, 2, 11, "CREATED  " .. (created and tostring(created) or "UNKNOWN"),
     created and colors.lime or colors.gray, colors.black)
-  writeAt(target, 2, 10, "AGE      " .. (age and (tostring(age) .. " years") or "UNKNOWN"),
+  writeAt(target, 2, 12, "AGE      " .. (age and (tostring(age) .. " years") or "UNKNOWN"),
     age and colors.lightBlue or colors.gray, colors.black)
-  writeAt(target, 2, 11, "UUID     " .. tostring(playerProfile.uuid or "UNKNOWN"),
+  writeAt(target, 2, 13, "UUID     " .. tostring(playerProfile.uuid or "UNKNOWN"),
     colors.lightGray, colors.black)
-  writeAt(target, 2, 13, "KNOWN USERNAMES", colors.white, colors.black)
+  writeAt(target, 2, 15, "KNOWN USERNAMES", colors.white, colors.black)
 
   local history = type(playerProfile.username_history) == "table" and
     playerProfile.username_history or {}
-  local rows = math.max(1, height - 14)
+  local rows = math.max(1, height - 16)
   if #history == 0 then
-    writeAt(target, 2, 14, "No public history available", colors.gray, colors.black)
+    writeAt(target, 2, 16, "No public history available", colors.gray, colors.black)
   else
     for index = 1, math.min(#history, rows) do
       local item = history[index]
       local username = type(item) == "table" and item.username or tostring(item)
       local changed = type(item) == "table" and item.changed_at or nil
-      writeAt(target, 2, index + 13, index .. ". " .. tostring(username),
+      writeAt(target, 2, index + 15, index .. ". " .. tostring(username),
         index == #history and colors.white or colors.lightGray, colors.black)
       if changed and width > 38 then
-        writeAt(target, width - 11, index + 13, tostring(changed):sub(1, 10), colors.gray, colors.black)
+        writeAt(target, width - 11, index + 15, tostring(changed):sub(1, 10), colors.gray, colors.black)
       end
     end
   end
@@ -498,6 +601,7 @@ draw = function()
   if selectedPlayerName then drawPlayerProfile(team)
   elseif team then drawDetails(team)
   elseif viewMode == "map" then drawMap()
+  elseif viewMode == "away" then drawAwayPlayers()
   else drawRanking() end
 end
 
@@ -509,6 +613,8 @@ local function animate()
     drawAnimatedLine(2, nearestColor(target, team.color))
   elseif viewMode == "map" then
     drawAnimatedLine(2, colors.lime)
+  elseif viewMode == "away" then
+    drawAnimatedLine(2, colors.orange)
   else
     drawAnimatedLine(2, colors.cyan)
   end
@@ -549,7 +655,13 @@ while true do
       elseif value == keys.r then update() end
     else
       if value == keys.m then viewMode = viewMode == "map" and "list" or "map"
-      elseif viewMode == "map" and (value == keys.left or value == keys.backspace) then viewMode = "list"
+      elseif value == keys.a then viewMode = viewMode == "away" and "list" or "away"
+      elseif viewMode == "away" and (value == keys.right or value == keys.pageDown or value == keys.down) then
+        awayPage = awayPage + 1
+      elseif viewMode == "away" and (value == keys.pageUp or value == keys.up) then
+        awayPage = awayPage - 1
+      elseif (viewMode == "map" or viewMode == "away") and
+          (value == keys.left or value == keys.backspace) then viewMode = "list"
       elseif value == keys.right or value == keys.pageDown or value == keys.down then page = page + 1
       elseif value == keys.left or value == keys.pageUp or value == keys.up then page = page - 1
       elseif value == keys.r then update() end
@@ -584,13 +696,37 @@ while true do
     elseif viewMode == "map" and touchY == height and touchX <= 7 then
       playClick("back")
       viewMode = "list"
+    elseif viewMode == "map" and touchY == height and touchX >= 9 and touchX <= 16 then
+      playClick("open")
+      viewMode = "away"
     elseif viewMode == "map" and mapCells[touchY] and mapCells[touchY][touchX] then
       playClick("open")
       selectedName = tostring(mapCells[touchY][touchX].team)
       detailPage = 1
+    elseif viewMode == "away" and touchY == height and touchX <= 7 then
+      playClick("back")
+      viewMode = "list"
+    elseif viewMode == "away" and touchY == height and touchX >= 9 and touchX <= 15 then
+      playClick("open")
+      viewMode = "map"
+    elseif viewMode == "away" and touchY == height and touchX >= 18 and touchX <= 20 then
+      playClick("page")
+      awayPage = awayPage - 1
+    elseif viewMode == "away" and touchY == height and touchX >= 21 and touchX <= 23 then
+      playClick("page")
+      awayPage = awayPage + 1
+    elseif viewMode == "away" and rowAwayPlayers[touchY] then
+      local player = rowAwayPlayers[touchY]
+      playClick("open")
+      selectedName = tostring(player.team)
+      detailPage = 1
+      openPlayer(tostring(player.name))
     elseif viewMode == "list" and touchY == height and touchX >= 18 and touchX <= 24 then
       playClick("open")
       viewMode = "map"
+    elseif viewMode == "list" and touchY == height and touchX >= 26 and touchX <= 34 then
+      playClick("open")
+      viewMode = "away"
     elseif rowTeams[touchY] then
       playClick("open")
       selectedName = tostring(rowTeams[touchY].name)
@@ -634,13 +770,37 @@ while true do
     elseif viewMode == "map" and clickY == height and clickX <= 7 then
       playClick("back")
       viewMode = "list"
+    elseif viewMode == "map" and clickY == height and clickX >= 9 and clickX <= 16 then
+      playClick("open")
+      viewMode = "away"
     elseif viewMode == "map" and mapCells[clickY] and mapCells[clickY][clickX] then
       playClick("open")
       selectedName = tostring(mapCells[clickY][clickX].team)
       detailPage = 1
+    elseif viewMode == "away" and clickY == height and clickX <= 7 then
+      playClick("back")
+      viewMode = "list"
+    elseif viewMode == "away" and clickY == height and clickX >= 9 and clickX <= 15 then
+      playClick("open")
+      viewMode = "map"
+    elseif viewMode == "away" and clickY == height and clickX >= 18 and clickX <= 20 then
+      playClick("page")
+      awayPage = awayPage - 1
+    elseif viewMode == "away" and clickY == height and clickX >= 21 and clickX <= 23 then
+      playClick("page")
+      awayPage = awayPage + 1
+    elseif viewMode == "away" and rowAwayPlayers[clickY] then
+      local player = rowAwayPlayers[clickY]
+      playClick("open")
+      selectedName = tostring(player.team)
+      detailPage = 1
+      openPlayer(tostring(player.name))
     elseif viewMode == "list" and clickY == height and clickX >= 18 and clickX <= 24 then
       playClick("open")
       viewMode = "map"
+    elseif viewMode == "list" and clickY == height and clickX >= 26 and clickX <= 34 then
+      playClick("open")
+      viewMode = "away"
     elseif rowTeams[clickY] then
       playClick("open")
       selectedName = tostring(rowTeams[clickY].name)
