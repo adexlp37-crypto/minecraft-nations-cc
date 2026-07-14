@@ -1,5 +1,6 @@
 local proxyUrl = "https://script.google.com/macros/s/AKfycbxw_loC2T0hdhyFTXam2AObNn5Tkz6bPTeAR2SoRMOBiEXaS0fYM1sQBusM0_rNAkRiLA/exec"
 local refreshSeconds = 10
+local animationSeconds = 0.5
 
 local palette = {
   colors.white, colors.orange, colors.magenta, colors.lightBlue,
@@ -70,12 +71,45 @@ local function fetchData()
 end
 
 local monitor = peripheral.find("monitor")
+local speaker = peripheral.find("speaker")
 local target = monitor or term
 if monitor then monitor.setTextScale(1) end
 
 local data, lastError, page = nil, nil, 1
 local selectedName, detailPage = nil, 1
 local rowTeams = {}
+local animationFrame = 0
+
+local function playClick(kind)
+  if not speaker then return end
+  if kind == "open" then
+    pcall(speaker.playNote, "pling", 0.45, 14)
+  elseif kind == "back" then
+    pcall(speaker.playNote, "harp", 0.40, 8)
+  else
+    pcall(speaker.playNote, "hat", 0.35, 10)
+  end
+end
+
+local function drawAnimatedLine(y, accent)
+  local width = target.getSize()
+  writeAt(target, 1, y, string.rep("-", width), colors.gray, colors.black)
+  local length = math.min(6, width)
+  local start = animationFrame % math.max(1, width) + 1
+  local firstLength = math.min(length, width - start + 1)
+  writeAt(target, start, y, string.rep("=", firstLength), accent, colors.black)
+  if firstLength < length then
+    writeAt(target, 1, y, string.rep("=", length - firstLength), accent, colors.black)
+  end
+end
+
+local function drawBackButton()
+  local backColors = { colors.gray, colors.cyan, colors.purple, colors.orange }
+  local index = math.floor(animationFrame / 5) % #backColors + 1
+  local background = backColors[index]
+  local foreground = background == colors.gray and colors.white or colors.black
+  writeAt(target, 1, 1, "< BACK ", foreground, background)
+end
 
 local function selectedTeam()
   if not data or not selectedName then return nil end
@@ -92,7 +126,7 @@ local function drawHeader(title, accent)
   if width > 30 then
     writeAt(target, width - 7, 1, os.date("%H:%M"), colors.gray, colors.black)
   end
-  writeAt(target, 1, 2, string.rep("-", width), accent or colors.cyan, colors.black)
+  drawAnimatedLine(2, accent or colors.cyan)
 end
 
 local function drawRanking()
@@ -113,8 +147,7 @@ local function drawRanking()
   local first = (page - 1) * rows + 1
 
   writeAt(target, 1, 3, "#  TEAM", colors.gray, colors.black)
-  writeAt(target, math.max(14, width - 13), 3, "ONLINE", colors.gray, colors.black)
-  writeAt(target, math.max(20, width - 7), 3, "AREA", colors.gray, colors.black)
+  writeAt(target, math.max(14, width - 8), 3, "ONLINE", colors.gray, colors.black)
 
   for row = 1, rows do
     local rank = first + row - 1
@@ -124,9 +157,7 @@ local function drawRanking()
     rowTeams[y] = team
     local teamColor = nearestColor(target, team.color)
     local onlineText = tostring(team.online or 0) .. "/" .. tostring(team.members or 0)
-    local areaText = compactNumber(team.areaBlocks)
-    local onlineX = math.max(14, width - 13)
-    local areaX = math.max(20, width - 7)
+    local onlineX = math.max(14, width - 8)
     local nameWidth = math.max(3, onlineX - 6)
     local rankColor = rank == 1 and colors.yellow or
       rank == 2 and colors.lightGray or rank == 3 and colors.orange or colors.gray
@@ -135,7 +166,6 @@ local function drawRanking()
     writeAt(target, 6, y, tostring(team.name or "?"):sub(1, nameWidth), teamColor, colors.black)
     writeAt(target, onlineX, y, onlineText,
       (tonumber(team.online) or 0) > 0 and colors.lime or colors.gray, colors.black)
-    writeAt(target, areaX, y, areaText, colors.yellow, colors.black)
   end
 
   local footer = string.format(" PAGE %d/%d   %d TEAMS   TAP A TEAM", page, pageCount, #data.teams)
@@ -147,9 +177,9 @@ local function drawDetails(team)
   local teamColor = nearestColor(target, team.color)
   target.setBackgroundColor(colors.black)
   target.clear()
-  writeAt(target, 1, 1, "< BACK", colors.white, colors.gray)
+  drawBackButton()
   writeAt(target, 9, 1, "TEAM DETAILS", colors.white, colors.black)
-  writeAt(target, 1, 2, string.rep("-", width), teamColor, colors.black)
+  drawAnimatedLine(2, teamColor)
   writeAt(target, 2, 3, tostring(team.name or "UNKNOWN"), teamColor, colors.black)
   writeAt(target, 2, 5,
     string.format("ONLINE  %d / %d", tonumber(team.online) or 0, tonumber(team.members) or 0),
@@ -207,6 +237,17 @@ local function draw()
   if team then drawDetails(team) else drawRanking() end
 end
 
+local function animate()
+  animationFrame = animationFrame + 1
+  local team = selectedTeam()
+  if team then
+    drawBackButton()
+    drawAnimatedLine(2, nearestColor(target, team.color))
+  else
+    drawAnimatedLine(2, colors.cyan)
+  end
+end
+
 local function update()
   local newData, err = fetchData()
   if newData then data, lastError = newData, nil
@@ -216,11 +257,15 @@ end
 
 update()
 local timer = os.startTimer(refreshSeconds)
+local animationTimer = os.startTimer(animationSeconds)
 while true do
   local event, value, x, y = os.pullEvent()
   if event == "timer" and value == timer then
     update()
     timer = os.startTimer(refreshSeconds)
+  elseif event == "timer" and value == animationTimer then
+    animate()
+    animationTimer = os.startTimer(animationSeconds)
   elseif event == "key" then
     if selectedName then
       if value == keys.left or value == keys.backspace then selectedName, detailPage = nil, 1
@@ -236,24 +281,38 @@ while true do
   elseif event == "monitor_touch" then
     local touchX, touchY = x, y
     if selectedName then
-      if touchY == 1 and touchX <= 7 then selectedName, detailPage = nil, 1
-      else detailPage = detailPage + 1 end
+      if touchY == 1 and touchX <= 7 then
+        playClick("back")
+        selectedName, detailPage = nil, 1
+      else
+        playClick("page")
+        detailPage = detailPage + 1
+      end
     elseif rowTeams[touchY] then
+      playClick("open")
       selectedName = tostring(rowTeams[touchY].name)
       detailPage = 1
     else
+      playClick("page")
       page = page + 1
     end
     draw()
   elseif event == "mouse_click" then
     local clickX, clickY = x, y
     if selectedName then
-      if clickY == 1 and clickX <= 7 then selectedName, detailPage = nil, 1
-      else detailPage = detailPage + 1 end
+      if clickY == 1 and clickX <= 7 then
+        playClick("back")
+        selectedName, detailPage = nil, 1
+      else
+        playClick("page")
+        detailPage = detailPage + 1
+      end
     elseif rowTeams[clickY] then
+      playClick("open")
       selectedName = tostring(rowTeams[clickY].name)
       detailPage = 1
     else
+      playClick("page")
       page = page + 1
     end
     draw()
