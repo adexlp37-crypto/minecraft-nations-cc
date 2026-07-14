@@ -108,7 +108,15 @@ local function drawBackButton()
   local index = math.floor(animationFrame / 5) % #backColors + 1
   local background = backColors[index]
   local foreground = background == colors.gray and colors.white or colors.black
-  writeAt(target, 1, 1, "< BACK ", foreground, background)
+  writeAt(target, 1, 1, "<  BACK  ", foreground, background)
+end
+
+local function drawPageButtons(y, current, total)
+  writeAt(target, 1, y, "< PREV ", colors.white, current > 1 and colors.gray or colors.black)
+  writeAt(target, 8, y, " NEXT > ", colors.white, current < total and colors.gray or colors.black)
+  local width = target.getSize()
+  local status = tostring(current) .. "/" .. tostring(total)
+  writeAt(target, math.max(17, width - #status + 1), y, status, colors.lightGray, colors.black)
 end
 
 local function selectedTeam()
@@ -168,8 +176,7 @@ local function drawRanking()
       (tonumber(team.online) or 0) > 0 and colors.lime or colors.gray, colors.black)
   end
 
-  local footer = string.format(" PAGE %d/%d   %d TEAMS   TAP A TEAM", page, pageCount, #data.teams)
-  writeAt(target, 1, height, footer, colors.lightGray, colors.black)
+  drawPageButtons(height, page, pageCount)
 end
 
 local function drawDetails(team)
@@ -178,7 +185,7 @@ local function drawDetails(team)
   target.setBackgroundColor(colors.black)
   target.clear()
   drawBackButton()
-  writeAt(target, 9, 1, "TEAM DETAILS", colors.white, colors.black)
+  writeAt(target, 12, 1, "TEAM DETAILS", colors.white, colors.black)
   drawAnimatedLine(2, teamColor)
   writeAt(target, 2, 3, tostring(team.name or "UNKNOWN"), teamColor, colors.black)
   writeAt(target, 2, 5,
@@ -228,8 +235,7 @@ local function drawDetails(team)
       isOnline and "ONLINE" or "OFFLINE",
       isOnline and colors.lime or colors.gray, colors.black)
   end
-  writeAt(target, 1, height,
-    string.format(" MEMBER PAGE %d/%d   < BACK", detailPage, pages), colors.gray, colors.black)
+  drawPageButtons(height, detailPage, pages)
 end
 
 local function draw()
@@ -280,40 +286,62 @@ while true do
     draw()
   elseif event == "monitor_touch" then
     local touchX, touchY = x, y
+    local _, height = target.getSize()
     if selectedName then
-      if touchY == 1 and touchX <= 7 then
+      if touchY == 1 and touchX <= 9 then
         playClick("back")
         selectedName, detailPage = nil, 1
-      else
+      elseif touchY == height and touchX <= 7 then
+        playClick("page")
+        detailPage = detailPage - 1
+      elseif touchY == height and touchX >= 8 and touchX <= 15 then
         playClick("page")
         detailPage = detailPage + 1
+      else
+        playClick("page")
       end
     elseif rowTeams[touchY] then
       playClick("open")
       selectedName = tostring(rowTeams[touchY].name)
       detailPage = 1
-    else
+    elseif touchY == height and touchX <= 7 then
+      playClick("page")
+      page = page - 1
+    elseif touchY == height and touchX >= 8 and touchX <= 15 then
       playClick("page")
       page = page + 1
+    else
+      playClick("page")
     end
     draw()
   elseif event == "mouse_click" then
     local clickX, clickY = x, y
+    local _, height = target.getSize()
     if selectedName then
-      if clickY == 1 and clickX <= 7 then
+      if clickY == 1 and clickX <= 9 then
         playClick("back")
         selectedName, detailPage = nil, 1
-      else
+      elseif clickY == height and clickX <= 7 then
+        playClick("page")
+        detailPage = detailPage - 1
+      elseif clickY == height and clickX >= 8 and clickX <= 15 then
         playClick("page")
         detailPage = detailPage + 1
+      else
+        playClick("page")
       end
     elseif rowTeams[clickY] then
       playClick("open")
       selectedName = tostring(rowTeams[clickY].name)
       detailPage = 1
-    else
+    elseif clickY == height and clickX <= 7 then
+      playClick("page")
+      page = page - 1
+    elseif clickY == height and clickX >= 8 and clickX <= 15 then
       playClick("page")
       page = page + 1
+    else
+      playClick("page")
     end
     draw()
   end
