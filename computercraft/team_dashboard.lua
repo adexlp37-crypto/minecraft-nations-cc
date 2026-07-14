@@ -1,4 +1,4 @@
-local proxyUrl = "https://script.google.com/macros/s/AKfycbxw_loC2T0hdhyFTXam2AObNn5Tkz6bPTeAR2SoRMOBiEXaS0fYM1sQBusM0_rNAkRiLA/exec"
+local proxyUrl = "https://script.google.com/macros/s/AKfycbyXcO7DJgloCLhteQixcPabIXHQTANvCyrMaOrLWjava--_iqFB-ItfgLTwbBpHzOV3/exec"
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
 local refreshSeconds = 10
 local animationSeconds = 0.5
