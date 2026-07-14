@@ -2,6 +2,7 @@ local proxyUrl = "https://script.google.com/macros/s/AKfycbxw_loC2T0hdhyFTXam2AO
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
 local refreshSeconds = 10
 local animationSeconds = 0.5
+local lastSeenFile = ".team_dashboard_last_seen"
 
 local palette = {
   colors.white, colors.orange, colors.magenta, colors.lightBlue,
@@ -82,8 +83,65 @@ local rowTeams = {}
 local rowPlayers = {}
 local selectedPlayerName, playerProfile, playerError = nil, nil, nil
 local profileCache = {}
+local lastSeen = {}
 local animationFrame = 0
 local draw
+
+local function loadLastSeen()
+  if not fs.exists(lastSeenFile) then return end
+  local file = fs.open(lastSeenFile, "r")
+  if not file then return end
+  local saved = textutils.unserializeJSON(file.readAll())
+  file.close()
+  if type(saved) == "table" then lastSeen = saved end
+end
+
+local function saveLastSeen()
+  local temporary = lastSeenFile .. ".tmp"
+  local file = fs.open(temporary, "w")
+  if not file then return end
+  file.write(textutils.serializeJSON(lastSeen))
+  file.close()
+  if fs.exists(lastSeenFile) then fs.delete(lastSeenFile) end
+  fs.move(temporary, lastSeenFile)
+end
+
+local function rememberOnlinePlayers(newData)
+  if not os.epoch then return end
+  local now = os.epoch("utc")
+  local changed = false
+  for _, team in ipairs(type(newData.teams) == "table" and newData.teams or {}) do
+    for _, name in ipairs(type(team.onlineNames) == "table" and team.onlineNames or {}) do
+      local key = tostring(name):lower()
+      lastSeen[key] = { name=tostring(name), time=now }
+      changed = true
+    end
+  end
+  if changed then saveLastSeen() end
+end
+
+local function playerIsOnline(team, name)
+  if not team or not name then return false end
+  for _, onlineName in ipairs(type(team.onlineNames) == "table" and team.onlineNames or {}) do
+    if tostring(onlineName):lower() == tostring(name):lower() then return true end
+  end
+  return false
+end
+
+local function lastSeenText(name)
+  local entry = lastSeen[tostring(name or ""):lower()]
+  if type(entry) ~= "table" or not tonumber(entry.time) or not os.epoch then
+    return "NOT OBSERVED YET"
+  end
+  local seconds = math.max(0, math.floor((os.epoch("utc") - tonumber(entry.time)) / 1000))
+  if seconds < 60 then return "JUST NOW" end
+  if seconds < 3600 then return math.floor(seconds / 60) .. "m AGO" end
+  if seconds < 86400 then return math.floor(seconds / 3600) .. "h AGO" end
+  if seconds < 604800 then return math.floor(seconds / 86400) .. "d AGO" end
+  return os.date("!%Y-%m-%d %H:%M UTC", math.floor(tonumber(entry.time) / 1000))
+end
+
+loadLastSeen()
 
 local function playClick(kind)
   if not speaker then return end
@@ -294,43 +352,49 @@ local function drawPlayerProfile(team)
   drawAnimatedLine(2, teamColor)
   writeAt(target, 2, 3, selectedPlayerName or "UNKNOWN", teamColor, colors.black)
 
+  local onlineNow = playerIsOnline(team, selectedPlayerName)
+  writeAt(target, 2, 5, "STATUS     " .. (onlineNow and "ONLINE NOW" or "OFFLINE"),
+    onlineNow and colors.lime or colors.gray, colors.black)
+  writeAt(target, 2, 6, "LAST SEEN  " .. (onlineNow and "ONLINE NOW" or lastSeenText(selectedPlayerName)),
+    onlineNow and colors.lime or colors.lightBlue, colors.black)
+
   if not playerProfile and not playerError then
-    writeAt(target, 2, 6, "LOADING PROFILE...", colors.yellow, colors.black)
+    writeAt(target, 2, 8, "LOADING PROFILE...", colors.yellow, colors.black)
     return
   end
   if playerError then
-    writeAt(target, 2, 6, "PROFILE UNAVAILABLE", colors.red, colors.black)
-    writeAt(target, 2, 8, playerError, colors.orange, colors.black)
+    writeAt(target, 2, 8, "PROFILE UNAVAILABLE", colors.red, colors.black)
+    writeAt(target, 2, 10, playerError, colors.orange, colors.black)
     writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
     return
   end
 
   local created = playerProfile.created_at
   local age = accountAge(created)
-  writeAt(target, 2, 5, "CURRENT  " .. tostring(playerProfile.username or selectedPlayerName),
+  writeAt(target, 2, 8, "CURRENT  " .. tostring(playerProfile.username or selectedPlayerName),
     colors.white, colors.black)
-  writeAt(target, 2, 6, "CREATED  " .. (created and tostring(created) or "UNKNOWN"),
+  writeAt(target, 2, 9, "CREATED  " .. (created and tostring(created) or "UNKNOWN"),
     created and colors.lime or colors.gray, colors.black)
-  writeAt(target, 2, 7, "AGE      " .. (age and (tostring(age) .. " years") or "UNKNOWN"),
+  writeAt(target, 2, 10, "AGE      " .. (age and (tostring(age) .. " years") or "UNKNOWN"),
     age and colors.lightBlue or colors.gray, colors.black)
-  writeAt(target, 2, 8, "UUID     " .. tostring(playerProfile.uuid or "UNKNOWN"),
+  writeAt(target, 2, 11, "UUID     " .. tostring(playerProfile.uuid or "UNKNOWN"),
     colors.lightGray, colors.black)
-  writeAt(target, 2, 10, "KNOWN USERNAMES", colors.white, colors.black)
+  writeAt(target, 2, 13, "KNOWN USERNAMES", colors.white, colors.black)
 
   local history = type(playerProfile.username_history) == "table" and
     playerProfile.username_history or {}
-  local rows = math.max(1, height - 11)
+  local rows = math.max(1, height - 14)
   if #history == 0 then
-    writeAt(target, 2, 11, "No public history available", colors.gray, colors.black)
+    writeAt(target, 2, 14, "No public history available", colors.gray, colors.black)
   else
     for index = 1, math.min(#history, rows) do
       local item = history[index]
       local username = type(item) == "table" and item.username or tostring(item)
       local changed = type(item) == "table" and item.changed_at or nil
-      writeAt(target, 2, index + 10, index .. ". " .. tostring(username),
+      writeAt(target, 2, index + 13, index .. ". " .. tostring(username),
         index == #history and colors.white or colors.lightGray, colors.black)
       if changed and width > 38 then
-        writeAt(target, width - 11, index + 10, tostring(changed):sub(1, 10), colors.gray, colors.black)
+        writeAt(target, width - 11, index + 13, tostring(changed):sub(1, 10), colors.gray, colors.black)
       end
     end
   end
@@ -357,7 +421,9 @@ end
 
 local function update()
   local newData, err = fetchData()
-  if newData then data, lastError = newData, nil
+  if newData then
+    rememberOnlinePlayers(newData)
+    data, lastError = newData, nil
   else lastError = err end
   draw()
 end
