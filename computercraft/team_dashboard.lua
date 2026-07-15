@@ -54,7 +54,8 @@ end
 local function fetchData()
   local proxyUrl = proxyUrls[activeProxy]
   local separator = proxyUrl:find("?", 1, true) and "&" or "?"
-  local url = proxyUrl .. separator .. "mode=teams&dashboard=" ..
+  local cloudflareMode = proxyUrl:find("workers.dev", 1, true) and "mode=teams&" or ""
+  local url = proxyUrl .. separator .. cloudflareMode .. "dashboard=" ..
     tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
   local ok, response, err = pcall(http.get, {
     url=url, redirect=true, timeout=12,
