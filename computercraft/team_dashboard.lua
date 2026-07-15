@@ -6,7 +6,7 @@ local proxyUrls = {
 }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "13"
+local dashboardVersion = "14"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
