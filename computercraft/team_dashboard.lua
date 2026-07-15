@@ -1,12 +1,12 @@
 local proxyUrls = {
-  "https://minecraft-nations-cc.adexlp37.workers.dev",
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
   "https://script.google.com/macros/s/AKfycbwSsBb4SokTdVDhIUv0zTJzcMT8o_hJyzo7ziEdlMOYK8gACLHOKyQPZbpPnzTESiR5Jg/exec",
   "https://script.google.com/macros/s/AKfycbyXcO7DJgloCLhteQixcPabIXHQTANvCyrMaOrLWjava--_iqFB-ItfgLTwbBpHzOV3/exec"
 }
+local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "14"
+local dashboardVersion = "15"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
@@ -286,7 +286,8 @@ local function drawHeader(title, accent)
     local liveAge = lastPlayerUpdate and os.epoch and
       math.max(0, math.floor((os.epoch("utc") - lastPlayerUpdate) / 1000)) or nil
     writeAt(target, width - 20, 1,
-      (liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...") .. " P" .. activeProxy,
+      (liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...") .. " " ..
+        tostring(proxyNames[activeProxy] or ("P" .. activeProxy)),
       liveAge and liveAge <= 5 and colors.lime or colors.orange, colors.black)
   end
   if width > 30 then
@@ -838,7 +839,8 @@ local function handleProxyFailure(url, err, response)
   if kind then pendingRequests[kind] = false
   else pendingRequests.players, pendingRequests.teams = false, false end
   if response then pcall(response.close) end
-  lastError = "P" .. tostring(proxyIndex) .. ": " .. tostring(err or "HTTP request failed")
+  lastError = tostring(proxyNames[proxyIndex] or ("P" .. proxyIndex)) .. ": " ..
+    tostring(err or "HTTP request failed")
   rotateProxy(proxyIndex)
   draw()
 end
