@@ -14,6 +14,7 @@ const GOOGLE_PROXIES = [
 const PLAYER_TTL_SECONDS = 6;
 const TEAM_TTL_SECONDS = 600;
 const ERROR_TTL_SECONDS = 30;
+const BLUEMAP_BASE = "http://172.255.251.68.nip.io:25581";
 
 function jsonResponse(value, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(value), {
@@ -31,6 +32,157 @@ function validPayload(payload, mode) {
   if (!payload || typeof payload !== "object" || payload.error) return false;
   if (!Array.isArray(payload.players)) return false;
   return mode !== "teams" || (Array.isArray(payload.teams) && Array.isArray(payload.bases));
+}
+
+async function fetchBlueMap(path) {
+  const response = await fetch(BLUEMAP_BASE + path, {
+    headers: { "Accept": "application/json" },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error(`${path} returned HTTP ${response.status}`);
+  return response.json();
+}
+
+function teamName(marker) {
+  const label = String(marker.label || "Unknown");
+  const detail = String(marker.detail || "");
+  const heading = detail.match(/<h3[^>]*>([^<]+)<\/h3>/i);
+  return heading ? heading[1].trim() : label.replace(/\s+.{1,3}\s+Region.*$/i, "").trim();
+}
+
+function members(detail) {
+  const result = [];
+  const seen = new Set();
+  const regex = /alt="([^"]+)"/g;
+  let match;
+  while ((match = regex.exec(String(detail || ""))) !== null) {
+    const name = match[1].trim();
+    const key = name.toLowerCase();
+    if (name && !seen.has(key)) {
+      seen.add(key);
+      result.push(name);
+    }
+  }
+  return result;
+}
+
+function markerBounds(marker, id) {
+  const shape = Array.isArray(marker.shape) ? marker.shape : [];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const point of shape) {
+    const x = Number(point.x), z = Number(point.z);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+  }
+  const position = marker.position || {};
+  const centerX = Number.isFinite(Number(position.x)) ? Number(position.x) :
+    (Number.isFinite(minX) ? (minX + maxX) / 2 : 0);
+  const centerZ = Number.isFinite(Number(position.z)) ? Number(position.z) :
+    (Number.isFinite(minZ) ? (minZ + maxZ) / 2 : 0);
+  if (!Number.isFinite(minX)) minX = maxX = centerX;
+  if (!Number.isFinite(minZ)) minZ = maxZ = centerZ;
+  const chunkMatch = String(marker.detail || "").match(/Chunks:<\/div>\s*<div>([\d,]+)/i);
+  return {
+    id: String(id), x: Math.round(centerX), z: Math.round(centerZ),
+    minX: Math.floor(minX), maxX: Math.ceil(maxX),
+    minZ: Math.floor(minZ), maxZ: Math.ceil(maxZ),
+    width: Math.max(1, Math.ceil(maxX - minX)),
+    depth: Math.max(1, Math.ceil(maxZ - minZ)),
+    chunks: chunkMatch ? Number(chunkMatch[1].replace(/,/g, "")) : 0
+  };
+}
+
+function parseTeamDefinitions(markerData) {
+  const markerSet = markerData["ftbchunks.claims.2d"];
+  if (!markerSet || !markerSet.markers) throw new Error("FTB Chunks marker set missing");
+  const grouped = new Map();
+  for (const [id, marker] of Object.entries(markerSet.markers)) {
+    const name = teamName(marker);
+    const key = name.toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, {
+      key, name,
+      color: marker.lineColor || marker.fillColor || { r:255, g:255, b:255 },
+      memberNames: [], regions: []
+    });
+    const team = grouped.get(key);
+    const known = new Set(team.memberNames.map(name => name.toLowerCase()));
+    for (const member of members(marker.detail)) {
+      if (!known.has(member.toLowerCase())) {
+        known.add(member.toLowerCase()); team.memberNames.push(member);
+      }
+    }
+    team.regions.push(markerBounds(marker, id));
+  }
+  return Array.from(grouped.values()).map(team => {
+    team.chunks = team.regions.reduce((sum, region) => sum + (Number(region.chunks) || 0), 0);
+    team.areaBlocks = team.chunks * 256;
+    team.members = team.memberNames.length;
+    return team;
+  });
+}
+
+function inside(position, region) {
+  const x = Number(position && position.x), z = Number(position && position.z);
+  return Number.isFinite(x) && Number.isFinite(z) &&
+    x >= region.minX && x <= region.maxX && z >= region.minZ && z <= region.maxZ;
+}
+
+async function fetchDirect(mode) {
+  const playerData = await fetchBlueMap("/maps/world/live/players.json");
+  const rawPlayers = Array.isArray(playerData.players) ? playerData.players : [];
+  if (mode === "players") return { players: rawPlayers, generatedAt: new Date().toISOString() };
+
+  const definitions = parseTeamDefinitions(
+    await fetchBlueMap("/maps/world/live/markers.json")
+  );
+  const memberTeam = new Map();
+  for (const team of definitions) {
+    for (const name of team.memberNames) memberTeam.set(name.toLowerCase(), team);
+  }
+  const players = rawPlayers.map(player => {
+    const team = memberTeam.get(String(player.name || "").toLowerCase()) || null;
+    let ownBaseRegion = null, insideTeam = null, insideRegion = null;
+    if (team) team.regions.some((region, index) => {
+      if (!inside(player.position, region)) return false;
+      ownBaseRegion = index + 1; insideTeam = team.name; insideRegion = index + 1; return true;
+    });
+    if (!ownBaseRegion) definitions.some(candidate => candidate.regions.some((region, index) => {
+      if (!inside(player.position, region)) return false;
+      insideTeam = candidate.name; insideRegion = index + 1; return true;
+    }));
+    return {
+      ...player, team: team ? team.name : null,
+      inOwnBase: ownBaseRegion !== null, ownBaseRegion, insideTeam, insideRegion,
+      locationStatus: ownBaseRegion ? "OWN_BASE" : (insideTeam ? "FOREIGN_BASE" : "OUTSIDE_BASES")
+    };
+  });
+  const enriched = new Map(players.map(player => [String(player.name || "").toLowerCase(), player]));
+  const bases = [];
+  const teams = definitions.map(definition => {
+    const onlinePlayers = definition.memberNames.map(name => enriched.get(name.toLowerCase())).filter(Boolean);
+    const onlineNames = onlinePlayers.map(player => player.name);
+    const atBaseNames = onlinePlayers.filter(player => player.inOwnBase).map(player => player.name);
+    definition.regions.forEach((region, index) => {
+      const playersAtBase = onlinePlayers.filter(player => player.ownBaseRegion === index + 1)
+        .map(player => player.name);
+      bases.push({
+        id: `${definition.key}:${index + 1}`, team: definition.name, region: index + 1,
+        color: definition.color, ...region, online: onlinePlayers.length,
+        atBase: playersAtBase.length, playersAtBase
+      });
+    });
+    return {
+      name: definition.name, color: definition.color, chunks: definition.chunks,
+      areaBlocks: definition.areaBlocks, members: definition.members,
+      online: onlineNames.length, atBase: atBaseNames.length,
+      away: Math.max(0, onlineNames.length - atBaseNames.length),
+      onlineNames, atBaseNames, memberNames: definition.memberNames, regions: definition.regions
+    };
+  });
+  teams.sort((a, b) => b.online - a.online || b.members - a.members || a.name.localeCompare(b.name));
+  bases.sort((a, b) => b.chunks - a.chunks || a.team.localeCompare(b.team));
+  return { players, teams, bases, generatedAt: new Date().toISOString() };
 }
 
 async function fetchGoogle(mode, forceTeams) {
@@ -134,7 +286,14 @@ export default {
     }
 
     try {
-      const payload = await fetchGoogle(mode, forceTeams);
+      let payload;
+      try {
+        payload = await fetchDirect(mode);
+        payload.gateway = { provider: "cloudflare", source: "bluemap-direct", cached: false };
+      } catch (directError) {
+        payload = await fetchGoogle(mode, forceTeams);
+        payload.gateway.directError = String(directError && directError.message || directError);
+      }
       const stored = jsonResponse(payload, 200, {
         "Cache-Control": `public, max-age=${ttl}`,
         "X-Nations-Cache": "MISS"
