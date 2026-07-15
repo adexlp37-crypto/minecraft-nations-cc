@@ -1,5 +1,6 @@
 local configFile = ".base_control.cfg"
-local version = "2"
+local liveCacheFile = ".base_control_live.json"
+local version = "3"
 
 local defaultProxies = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
@@ -11,21 +12,28 @@ local validSides = { top=true, bottom=true, left=true, right=true, front=true, b
 
 local function defaultConfig()
   return {
-    configVersion = 2,
+    configVersion = 3,
     webhookUrl = "",
     roleIds = {
       ally="1525923176196866048",
       enemy="1525922403283243048",
       unknown="1525922526553968911"
     },
-    groups = { member={}, ally={}, enemy={} },
+    groups = {
+      member = {
+        deformedrac="DeformedRac", shaycass382="ShayCass382",
+        kekdex="Kekdex", arseniymuromov="arseniymuromov"
+      },
+      ally = { hruzi="Hruzi", ["1hygge"]="1Hygge" },
+      enemy = { tbnyeet="Tbnyeet" }
+    },
     doorSide = "right",
     closeSignal = true,
     emergencyOpenSide = "",
     refreshSeconds = 6,
-    home = { minX=0, maxX=0, minY=0, maxY=0, minZ=0, maxZ=0 },
-    outer = { minX=0, maxX=0, minY=0, maxY=0, minZ=0, maxZ=0 },
-    inner = { minX=0, maxX=0, minY=0, maxY=0, minZ=0, maxZ=0 },
+    home = { minX=7110, maxX=7156, minY=50, maxY=120, minZ=-6459, maxZ=-6395 },
+    outer = { minX=6800, maxX=7500, minY=50, maxY=120, minZ=-7000, maxZ=-6000 },
+    inner = { minX=7056, maxX=7156, minY=50, maxY=120, minZ=-6440, maxZ=-6395 },
     proxies = defaultProxies
   }
 end
@@ -59,6 +67,22 @@ local function loadConfig()
   config.groups.member = type(config.groups.member) == "table" and config.groups.member or {}
   config.groups.ally = type(config.groups.ally) == "table" and config.groups.ally or {}
   config.groups.enemy = type(config.groups.enemy) == "table" and config.groups.enemy or {}
+  if tonumber(config.configVersion) < 3 then
+    local defaults = defaultConfig()
+    if next(config.groups.member) == nil then config.groups.member = defaults.groups.member end
+    if next(config.groups.ally) == nil then config.groups.ally = defaults.groups.ally end
+    if next(config.groups.enemy) == nil then config.groups.enemy = defaults.groups.enemy end
+    local function unset(zone)
+      return type(zone) ~= "table" or
+        ((tonumber(zone.minX) or 0) == 0 and (tonumber(zone.maxX) or 0) == 0 and
+         (tonumber(zone.minZ) or 0) == 0 and (tonumber(zone.maxZ) or 0) == 0)
+    end
+    if unset(config.home) then config.home = defaults.home end
+    if unset(config.outer) then config.outer = defaults.outer end
+    if unset(config.inner) then config.inner = defaults.inner end
+    config.configVersion = 3
+    saveConfig(config)
+  end
   config.proxies = type(config.proxies) == "table" and config.proxies or defaultProxies
   return config
 end
@@ -165,10 +189,10 @@ if command == "setup" then setup(); return end
 
 local config = loadConfig()
 if not config then
-  print("First start: opening setup.")
-  setup()
-  config = assert(loadConfig())
-  if command ~= "run" then return end
+  config = defaultConfig()
+  saveConfig(config)
+  print("Existing workshop coordinates, roles and player lists loaded.")
+  print("Use 'base_control setup' only if you want to change them.")
 end
 
 if command == "webhook" then
@@ -279,7 +303,7 @@ local function fetchPlayers()
       local payload = textutils.unserializeJSON(body)
       if type(payload) == "table" and type(payload.players) == "table" and not payload.error then
         activeProxy = index
-        return payload.players
+        return payload.players, nil, payload
       end
       failures[#failures + 1] = "G" .. index .. ": " ..
         tostring(type(payload) == "table" and payload.error or "invalid JSON")
@@ -288,6 +312,17 @@ local function fetchPlayers()
     end
   end
   return nil, table.concat(failures, " | ")
+end
+
+local function saveLiveData(payload)
+  payload.hubUpdatedAt = os.epoch and os.epoch("utc") or math.floor(os.clock() * 1000)
+  payload.hubProxy = activeProxy
+  local temporary = liveCacheFile .. ".tmp"
+  local file = assert(fs.open(temporary, "w"))
+  file.write(textutils.serializeJSON(payload))
+  file.close()
+  if fs.exists(liveCacheFile) then fs.delete(liveCacheFile) end
+  fs.move(temporary, liveCacheFile)
 end
 
 local function category(name)
@@ -397,25 +432,43 @@ local function process(players)
   return membersHome
 end
 
-print("Base Control v" .. version .. " active. No wireless modem required.")
-while true do
-  local players, err = fetchPlayers()
-  local emergencyOpen = config.emergencyOpenSide ~= "" and redstone.getInput(config.emergencyOpenSide)
-  if players then
-    lastError = ""
-    local membersHome = process(players)
-    if emergencyOpen then setDoor(false)
-    else setDoor(membersHome == 0) end
-    lastStatus = string.format("G%d | %d online | %d home | %d contacts",
-      activeProxy, #players, membersHome, (function() local n=0 for _ in pairs(tracked) do n=n+1 end return n end)())
-  else
-    -- Network failure preserves the physical door state instead of locking users out.
-    lastError = tostring(err)
-    if emergencyOpen then setDoor(false) end
-    lastStatus = "DATA STALE - HOLDING DOOR STATE"
+local function controllerLoop()
+  print("Base Control v" .. version .. " active. One proxy feed supplies security and dashboard.")
+  while true do
+    local players, err, payload = fetchPlayers()
+    local emergencyOpen = config.emergencyOpenSide ~= "" and redstone.getInput(config.emergencyOpenSide)
+    if players then
+      lastError = ""
+      saveLiveData(payload)
+      local membersHome = process(players)
+      if emergencyOpen then setDoor(false)
+      else setDoor(membersHome == 0) end
+      lastStatus = string.format("G%d | %d online | %d home | %d contacts",
+        activeProxy, #players, membersHome,
+        (function() local n=0 for _ in pairs(tracked) do n=n+1 end return n end)())
+    else
+      -- Network failure preserves the physical door state instead of locking users out.
+      lastError = tostring(err)
+      if emergencyOpen then setDoor(false) end
+      lastStatus = "DATA STALE - HOLDING DOOR STATE"
+    end
+    term.setTextColor(lastError == "" and colors.lime or colors.orange)
+    print(os.date("[%H:%M:%S] ") .. lastStatus)
+    if lastError ~= "" then print(lastError) end
+    sleep(config.refreshSeconds)
   end
-  term.setTextColor(lastError == "" and colors.lime or colors.orange)
-  print(os.date("[%H:%M:%S] ") .. lastStatus)
-  if lastError ~= "" then print(lastError) end
-  sleep(config.refreshSeconds)
+end
+
+local function dashboardLoop()
+  if not fs.exists("team_dashboard.lua") then
+    print("Dashboard missing. Run: updater base")
+    return
+  end
+  shell.run("team_dashboard", "local")
+end
+
+if peripheral.find("monitor") and fs.exists("team_dashboard.lua") then
+  parallel.waitForAll(controllerLoop, dashboardLoop)
+else
+  controllerLoop()
 end

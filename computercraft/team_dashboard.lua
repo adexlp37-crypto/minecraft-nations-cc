@@ -1,3 +1,7 @@
+local launchArgs = { ... }
+local localMode = tostring(launchArgs[1] or ""):lower() == "local"
+local localCacheFile = ".base_control_live.json"
+
 local proxyUrls = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
   "https://script.google.com/macros/s/AKfycbwSsBb4SokTdVDhIUv0zTJzcMT8o_hJyzo7ziEdlMOYK8gACLHOKyQPZbpPnzTESiR5Jg/exec",
@@ -6,7 +10,7 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "15"
+local dashboardVersion = "16"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
@@ -89,6 +93,7 @@ if monitor then monitor.setTextScale(1) end
 
 local data, lastError, page = nil, nil, 1
 local lastPlayerUpdate = nil
+local lastHubUpdate = 0
 local viewMode = "list"
 local awayPage = 1
 local selectedName, detailPage = nil, 1
@@ -287,7 +292,7 @@ local function drawHeader(title, accent)
       math.max(0, math.floor((os.epoch("utc") - lastPlayerUpdate) / 1000)) or nil
     writeAt(target, width - 20, 1,
       (liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...") .. " " ..
-        tostring(proxyNames[activeProxy] or ("P" .. activeProxy)),
+        (localMode and "HUB" or tostring(proxyNames[activeProxy] or ("P" .. activeProxy))),
       liveAge and liveAge <= 5 and colors.lime or colors.orange, colors.black)
   end
   if width > 30 then
@@ -845,22 +850,60 @@ local function handleProxyFailure(url, err, response)
   draw()
 end
 
-local function update()
-  requestProxy("teams")
+local function loadHubData()
+  if not fs.exists(localCacheFile) then
+    lastError = "Waiting for Base Control data..."
+    draw()
+    return
+  end
+  local file = fs.open(localCacheFile, "r")
+  if not file then
+    lastError = "Cannot read Base Control cache"
+    draw()
+    return
+  end
+  local payload = textutils.unserializeJSON(file.readAll())
+  file.close()
+  if type(payload) ~= "table" or type(payload.players) ~= "table" or type(payload.teams) ~= "table" then
+    lastError = "Invalid Base Control cache"
+    draw()
+    return
+  end
+  local updatedAt = tonumber(payload.hubUpdatedAt) or 0
+  if updatedAt ~= lastHubUpdate then
+    data = payload
+    lastHubUpdate = updatedAt
+    lastPlayerUpdate = updatedAt > 0 and updatedAt or (os.epoch and os.epoch("utc") or nil)
+    activeProxy = tonumber(payload.hubProxy) or activeProxy
+    sortTeams()
+    rememberOnlinePlayers(data)
+  end
+  local age = os.epoch and updatedAt > 0 and math.floor((os.epoch("utc") - updatedAt) / 1000) or 0
+  lastError = age > 30 and ("HUB DATA STALE: " .. tostring(age) .. "s") or nil
+  draw()
 end
 
-lastError = "Loading live data..."
+local function update()
+  if localMode then loadHubData()
+  else requestProxy("teams") end
+end
+
+lastError = localMode and "Waiting for Base Control data..." or "Loading live data..."
 draw()
-requestProxy("teams")
-local playerTimer = os.startTimer(playerRefreshSeconds)
-local teamTimer = os.startTimer(teamRefreshSeconds)
+if not localMode then requestProxy("teams") end
+local localTimer = localMode and os.startTimer(0.25) or nil
+local playerTimer = not localMode and os.startTimer(playerRefreshSeconds) or nil
+local teamTimer = not localMode and os.startTimer(teamRefreshSeconds) or nil
 local animationTimer = os.startTimer(animationSeconds)
 while true do
   local event, value, x, y = os.pullEvent()
-  if event == "timer" and value == playerTimer then
+  if event == "timer" and localMode and value == localTimer then
+    loadHubData()
+    localTimer = os.startTimer(1)
+  elseif event == "timer" and not localMode and value == playerTimer then
     requestProxy("players")
     playerTimer = os.startTimer(playerRefreshSeconds)
-  elseif event == "timer" and value == teamTimer then
+  elseif event == "timer" and not localMode and value == teamTimer then
     requestProxy("teams")
     teamTimer = os.startTimer(teamRefreshSeconds)
   elseif event == "timer" and value == animationTimer then
@@ -868,10 +911,10 @@ while true do
     animationTimer = os.startTimer(animationSeconds)
   elseif event == "http_success" then
     if profileRequests[value] then handleProfileSuccess(value, x)
-    else handleProxySuccess(value, x) end
+    elseif not localMode then handleProxySuccess(value, x) end
   elseif event == "http_failure" then
     if profileRequests[value] then handleProfileFailure(value, x, y)
-    else handleProxyFailure(value, x, y) end
+    elseif not localMode then handleProxyFailure(value, x, y) end
   elseif event == "key" then
     if selectedPlayerName then
       if value == keys.left or value == keys.backspace then
