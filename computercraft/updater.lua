@@ -1,7 +1,7 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "11"
+local version = "12"
 
 local retiredFiles = {
   "notes.lua", "fieldnav.lua", "hello.lua", "piano.lua", "scanner2.lua",
@@ -20,6 +20,7 @@ local packageManifests = {
   bluemap = "manifest-bluemap.txt",
   radar = "manifest-radar.txt",
   canal = "manifest-canal.txt",
+  base = "manifest-base.txt",
   teams = "manifest-teams.txt"
 }
 
@@ -31,6 +32,8 @@ local aliases = {
   tracker = "bluemap",
   customs = "canal",
   gate = "canal",
+  baseguard = "base",
+  workshop = "base",
   nations = "teams",
   ranking = "teams"
 }
@@ -62,6 +65,7 @@ local function printHelp()
   print("  updater alarm")
   print("  updater navigation")
   print("  updater canal")
+  print("  updater base")
   print("  updater bluemap")
   print("  updater radar")
   print("  updater teams")
