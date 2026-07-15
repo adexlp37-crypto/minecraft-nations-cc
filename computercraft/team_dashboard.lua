@@ -10,11 +10,12 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "17"
+local dashboardVersion = "18"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
 local lastSeenFile = ".team_dashboard_last_seen"
+local earthBlocksPerDegree = 204.8
 
 local palette = {
   colors.white, colors.orange, colors.magenta, colors.lightBlue,
@@ -230,6 +231,42 @@ local function teamByName(name)
   end
 end
 
+local function approximateEarthRegion(position)
+  if type(position) ~= "table" then return "UNKNOWN REGION" end
+  local x, z = tonumber(position.x), tonumber(position.z)
+  if not x or not z then return "UNKNOWN REGION" end
+  local longitude = x / earthBlocksPerDegree
+  local latitude = -z / earthBlocksPerDegree
+
+  if latitude <= -60 then return "ANTARCTICA" end
+  if latitude >= 72 then return "ARCTIC" end
+  if latitude >= 7 and latitude <= 84 and longitude >= -170 and longitude <= -50 then
+    return "NORTH AMERICA"
+  end
+  if latitude >= -56 and latitude <= 14 and longitude >= -82 and longitude <= -34 then
+    return "SOUTH AMERICA"
+  end
+  if latitude >= -35 and latitude <= 37 and longitude >= -18 and longitude <= 52 and
+      not (longitude > 32 and latitude > 22) then
+    return "AFRICA"
+  end
+  if latitude >= 35 and latitude <= 72 and longitude >= -25 and longitude <= 60 and
+      not (longitude > 42 and latitude < 55) then
+    return "EUROPE"
+  end
+  if latitude >= -50 and latitude <= 8 and longitude >= 105 and longitude <= 180 then
+    return "OCEANIA"
+  end
+  if latitude >= -12 and latitude <= 80 and longitude >= 25 and longitude <= 180 then
+    return "ASIA"
+  end
+  if latitude <= -45 then return "SOUTHERN OCEAN" end
+  if latitude >= 66 then return "ARCTIC OCEAN" end
+  if latitude < 25 and longitude >= 20 and longitude <= 120 then return "INDIAN OCEAN" end
+  if longitude >= -75 and longitude <= 25 then return "ATLANTIC OCEAN" end
+  return "PACIFIC OCEAN"
+end
+
 local function currentLocation(player, compact)
   if type(player) ~= "table" then return "UNKNOWN", colors.gray end
   if player.locationStatus == "OWN_BASE" or player.inOwnBase == true then
@@ -241,7 +278,37 @@ local function currentLocation(player, compact)
     if region then location = location .. " BASE #" .. tostring(math.floor(region)) end
     return location, colors.red
   end
-  return "WILDERNESS", colors.orange
+  local region = approximateEarthRegion(player.position)
+  return (compact and "WILD / " or "WILDERNESS / ") .. region, colors.orange
+end
+
+local function drawAwayTeamLegend(players, width)
+  local listed, seen = {}, {}
+  for _, player in ipairs(players) do
+    local name = tostring(player.team or "UNKNOWN")
+    local key = name:lower()
+    if not seen[key] then
+      seen[key] = true
+      listed[#listed + 1] = { name=name, team=teamByName(name) }
+    end
+  end
+  table.sort(listed, function(a, b) return a.name:lower() < b.name:lower() end)
+
+  writeAt(target, 2, 3, "ORIGIN", colors.gray, colors.black)
+  local x, y = 10, 3
+  for index, entry in ipairs(listed) do
+    local label = "[" .. entry.name:sub(1, 10) .. "]"
+    if x + #label - 1 > width then x, y = 2, y + 1 end
+    if y > 4 then
+      local remaining = #listed - index + 1
+      writeAt(target, math.max(2, width - 5), 4, "+" .. tostring(remaining), colors.lightGray, colors.black)
+      break
+    end
+    local teamColor = entry.team and nearestColor(target, entry.team.color) or colors.white
+    if teamColor == colors.black then teamColor = colors.gray end
+    writeAt(target, x, y, label, teamColor, colors.black)
+    x = x + #label + 1
+  end
 end
 
 local function awayPlayers()
@@ -456,17 +523,18 @@ local function drawAwayPlayers()
   mapCells = {}
   rowAwayPlayers = {}
   local players = awayPlayers()
-  local rows = math.max(1, height - 5)
+  local rows = math.max(1, height - 6)
   local pages = math.max(1, math.ceil(#players / rows))
   awayPage = math.max(1, math.min(awayPage, pages))
   local first = (awayPage - 1) * rows + 1
 
+  drawAwayTeamLegend(players, width)
   local locationX = width >= 42 and 18 or math.max(12, math.floor(width * 0.44))
   local coordinatesX = width >= 52 and math.max(locationX + 18, width - 16) or nil
   local locationWidth = (coordinatesX or (width + 1)) - locationX - 1
-  writeAt(target, 2, 3, "PLAYER", colors.gray, colors.black)
-  writeAt(target, locationX, 3, "CURRENT LOCATION", colors.gray, colors.black)
-  if coordinatesX then writeAt(target, coordinatesX, 3, "X / Z", colors.gray, colors.black) end
+  writeAt(target, 2, 5, "PLAYER", colors.gray, colors.black)
+  writeAt(target, locationX, 5, "CURRENT LOCATION", colors.gray, colors.black)
+  if coordinatesX then writeAt(target, coordinatesX, 5, "X / Z", colors.gray, colors.black) end
 
   if #players == 0 then
     writeAt(target, 2, 6, "ALL ONLINE MEMBERS ARE AT BASE", colors.lime, colors.black)
@@ -474,14 +542,17 @@ local function drawAwayPlayers()
   for row = 1, rows do
     local player = players[first + row - 1]
     if not player then break end
-    local y = row + 3
+    local y = row + 5
     rowAwayPlayers[y] = player
     local position = type(player.position) == "table" and player.position or {}
     local coordinates = tostring(math.floor(tonumber(position.x) or 0)) .. " / " ..
       tostring(math.floor(tonumber(position.z) or 0))
-    local location, locationColor = currentLocation(player, false)
+    local location, locationColor = currentLocation(player, true)
+    local originTeam = teamByName(player.team)
+    local nameColor = originTeam and nearestColor(target, originTeam.color) or colors.white
+    if nameColor == colors.black then nameColor = colors.gray end
     writeAt(target, 2, y, tostring(player.name or "?"):sub(1, math.max(3, locationX - 4)),
-      colors.white, colors.black)
+      nameColor, colors.black)
     writeAt(target, locationX, y, location:sub(1, math.max(3, locationWidth)),
       locationColor, colors.black)
     if coordinatesX then
@@ -575,6 +646,8 @@ local function drawPlayerProfile(team)
   writeAt(target, 12, 1, "PLAYER PROFILE", colors.white, colors.black)
   drawAnimatedLine(2, teamColor)
   writeAt(target, 2, 3, selectedPlayerName or "UNKNOWN", teamColor, colors.black)
+  writeAt(target, 2, 4, "ORIGIN     " .. tostring(team and team.name or "UNKNOWN"),
+    teamColor, colors.black)
 
   local onlineNow = playerIsOnline(team, selectedPlayerName)
   local livePlayer = selectedPlayerData(selectedPlayerName)
