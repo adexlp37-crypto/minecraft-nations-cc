@@ -10,7 +10,7 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "16"
+local dashboardVersion = "17"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
@@ -230,6 +230,20 @@ local function teamByName(name)
   end
 end
 
+local function currentLocation(player, compact)
+  if type(player) ~= "table" then return "UNKNOWN", colors.gray end
+  if player.locationStatus == "OWN_BASE" or player.inOwnBase == true then
+    return "OWN BASE", colors.lime
+  end
+  if player.locationStatus == "FOREIGN_BASE" and player.insideTeam then
+    local location = (compact and "" or "IN ") .. tostring(player.insideTeam)
+    local region = tonumber(player.insideRegion)
+    if region then location = location .. " BASE #" .. tostring(math.floor(region)) end
+    return location, colors.red
+  end
+  return "WILDERNESS", colors.orange
+end
+
 local function awayPlayers()
   local result = {}
   if not data or type(data.players) ~= "table" then return result end
@@ -237,8 +251,9 @@ local function awayPlayers()
     if player.team and player.inOwnBase == false then result[#result + 1] = player end
   end
   table.sort(result, function(a, b)
-    local at, bt = tostring(a.team or ""):lower(), tostring(b.team or ""):lower()
-    if at ~= bt then return at < bt end
+    local al = tostring(currentLocation(a, true)):lower()
+    local bl = tostring(currentLocation(b, true)):lower()
+    if al ~= bl then return al < bl end
     return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
   end)
   return result
@@ -436,7 +451,7 @@ end
 
 local function drawAwayPlayers()
   local width, height = target.getSize()
-  drawHeader("NATIONS  /  AWAY PLAYERS", colors.orange)
+  drawHeader("NATIONS  /  AWAY LOCATIONS", colors.orange)
   rowTeams = {}
   mapCells = {}
   rowAwayPlayers = {}
@@ -446,13 +461,12 @@ local function drawAwayPlayers()
   awayPage = math.max(1, math.min(awayPage, pages))
   local first = (awayPage - 1) * rows + 1
 
+  local locationX = width >= 42 and 18 or math.max(12, math.floor(width * 0.44))
+  local coordinatesX = width >= 52 and math.max(locationX + 18, width - 16) or nil
+  local locationWidth = (coordinatesX or (width + 1)) - locationX - 1
   writeAt(target, 2, 3, "PLAYER", colors.gray, colors.black)
-  if width >= 38 then
-    writeAt(target, 18, 3, "TEAM", colors.gray, colors.black)
-    writeAt(target, math.max(31, width - 16), 3, "X / Z", colors.gray, colors.black)
-  else
-    writeAt(target, math.max(18, width - 13), 3, "X / Z", colors.gray, colors.black)
-  end
+  writeAt(target, locationX, 3, "CURRENT LOCATION", colors.gray, colors.black)
+  if coordinatesX then writeAt(target, coordinatesX, 3, "X / Z", colors.gray, colors.black) end
 
   if #players == 0 then
     writeAt(target, 2, 6, "ALL ONLINE MEMBERS ARE AT BASE", colors.lime, colors.black)
@@ -465,14 +479,13 @@ local function drawAwayPlayers()
     local position = type(player.position) == "table" and player.position or {}
     local coordinates = tostring(math.floor(tonumber(position.x) or 0)) .. " / " ..
       tostring(math.floor(tonumber(position.z) or 0))
-    local locationColor = player.locationStatus == "FOREIGN_BASE" and colors.red or colors.orange
-    writeAt(target, 2, y, tostring(player.name or "?"):sub(1, 14), colors.white, colors.black)
-    if width >= 38 then
-      writeAt(target, 18, y, tostring(player.team or "UNKNOWN"):sub(1, math.max(3, width - 36)),
-        colors.lightGray, colors.black)
-      writeAt(target, math.max(31, width - 16), y, coordinates, locationColor, colors.black)
-    else
-      writeAt(target, math.max(18, width - 13), y, coordinates, locationColor, colors.black)
+    local location, locationColor = currentLocation(player, false)
+    writeAt(target, 2, y, tostring(player.name or "?"):sub(1, math.max(3, locationX - 4)),
+      colors.white, colors.black)
+    writeAt(target, locationX, y, location:sub(1, math.max(3, locationWidth)),
+      locationColor, colors.black)
+    if coordinatesX then
+      writeAt(target, coordinatesX, y, coordinates, colors.lightGray, colors.black)
     end
   end
 
@@ -570,11 +583,9 @@ local function drawPlayerProfile(team)
   writeAt(target, 2, 6, "LAST SEEN  " .. (onlineNow and "ONLINE NOW" or lastSeenText(selectedPlayerName)),
     onlineNow and colors.lime or colors.lightBlue, colors.black)
   if livePlayer then
-    local location = livePlayer.locationStatus == "OWN_BASE" and "IN OWN BASE" or
-      livePlayer.locationStatus == "FOREIGN_BASE" and
-        ("IN " .. tostring(livePlayer.insideTeam or "FOREIGN BASE")) or "OUTSIDE BASES"
+    local location, locationColor = currentLocation(livePlayer, false)
     writeAt(target, 2, 7, "LOCATION   " .. location,
-      livePlayer.locationStatus == "OWN_BASE" and colors.lime or colors.orange, colors.black)
+      locationColor, colors.black)
     local position = type(livePlayer.position) == "table" and livePlayer.position or {}
     writeAt(target, 2, 8,
       "POSITION   X " .. tostring(math.floor(tonumber(position.x) or 0)) ..
