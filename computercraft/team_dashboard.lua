@@ -816,9 +816,11 @@ local function handleProxySuccess(url, response)
       rememberOnlinePlayers(data)
     end
   elseif type(payload.players) == "table" then
+    local hadTeamData = data and type(data.teams) == "table"
     applyPlayers(payload.players)
     lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
-    lastError = nil
+    if hadTeamData then lastError = nil
+    else lastError = lastError or "Waiting for team data" end
   else
     lastError = "Proxy has no players field"
     rotateProxy(proxyIndex)
@@ -836,7 +838,7 @@ local function handleProxyFailure(url, err, response)
   if kind then pendingRequests[kind] = false
   else pendingRequests.players, pendingRequests.teams = false, false end
   if response then pcall(response.close) end
-  lastError = tostring(err or "HTTP request failed")
+  lastError = "P" .. tostring(proxyIndex) .. ": " .. tostring(err or "HTTP request failed")
   rotateProxy(proxyIndex)
   draw()
 end

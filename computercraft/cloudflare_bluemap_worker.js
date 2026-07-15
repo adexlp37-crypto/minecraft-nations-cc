@@ -152,8 +152,9 @@ async function fetchDirect(mode) {
       insideTeam = candidate.name; insideRegion = index + 1; return true;
     }));
     return {
-      ...player, team: team ? team.name : null,
-      inOwnBase: ownBaseRegion !== null, ownBaseRegion, insideTeam, insideRegion,
+      name: player.name, position: player.position,
+      team: team ? team.name : null,
+      inOwnBase: ownBaseRegion !== null, ownBaseRegion, insideTeam,
       locationStatus: ownBaseRegion ? "OWN_BASE" : (insideTeam ? "FOREIGN_BASE" : "OUTSIDE_BASES")
     };
   });
@@ -164,12 +165,12 @@ async function fetchDirect(mode) {
     const onlineNames = onlinePlayers.map(player => player.name);
     const atBaseNames = onlinePlayers.filter(player => player.inOwnBase).map(player => player.name);
     definition.regions.forEach((region, index) => {
-      const playersAtBase = onlinePlayers.filter(player => player.ownBaseRegion === index + 1)
-        .map(player => player.name);
       bases.push({
-        id: `${definition.key}:${index + 1}`, team: definition.name, region: index + 1,
-        color: definition.color, ...region, online: onlinePlayers.length,
-        atBase: playersAtBase.length, playersAtBase
+        team: definition.name, region: index + 1, color: definition.color,
+        x: region.x, z: region.z,
+        minX: region.minX, maxX: region.maxX,
+        minZ: region.minZ, maxZ: region.maxZ,
+        chunks: region.chunks
       });
     });
     return {
@@ -177,7 +178,7 @@ async function fetchDirect(mode) {
       areaBlocks: definition.areaBlocks, members: definition.members,
       online: onlineNames.length, atBase: atBaseNames.length,
       away: Math.max(0, onlineNames.length - atBaseNames.length),
-      onlineNames, atBaseNames, memberNames: definition.memberNames, regions: definition.regions
+      onlineNames, memberNames: definition.memberNames
     };
   });
   teams.sort((a, b) => b.online - a.online || b.members - a.members || a.name.localeCompare(b.name));
