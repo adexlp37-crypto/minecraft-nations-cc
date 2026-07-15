@@ -1,8 +1,11 @@
 local args = { ... }
 local musicDir = "music"
-local version = "1.0"
+local version = "2.0"
 local bytesPerSecond = 6000
 local chunkSize = 4096
+-- Search/stream protocol used by the public Rc1PCzLH player.
+local onlineApi = "https://ipod-2to6magyna-uc.a.run.app/"
+local onlineApiVersion = "2.1"
 
 local function cleanName(value)
   local name = tostring(value or "track")
@@ -53,6 +56,7 @@ if command == "help" or command == "-h" or command == "--help" then
   print("israel_music add <dfpwm-url> <track name>")
   print("israel_music remove <filename>")
   print("israel_music list")
+  print("Run the player and type online searches on the computer keyboard.")
   return
 elseif command == "add" then
   if not args[2] then error("Usage: israel_music add <dfpwm-url> <track name>", 0) end
@@ -106,6 +110,17 @@ local statusText = "READY"
 local statusColor = colors.lightBlue
 local flashAction = nil
 local flashUntil = 0
+local remoteTrack = nil
+local remoteQueue = {}
+local remoteLoadingUrl = nil
+local searchUrl = nil
+local searchQuery = ""
+local searchResults = {}
+local searchSelected = 1
+local searchOffset = 1
+local terminalMode = "input"
+local terminalStatus = "TYPE A SONG, ARTIST OR YOUTUBE URL"
+local queueOffset = 1
 
 local function isSpeaker(name)
   if peripheral.hasType then return peripheral.hasType(name, "speaker") end
@@ -166,12 +181,13 @@ end
 local function stopTrack(message)
   stopSpeakers()
   closeAudio()
+  remoteLoadingUrl = nil
   playing, paused, bytesRead = false, false, 0
   statusText = message or "STOPPED"
   statusColor = colors.lightBlue
 end
 
-local startTrack
+local startTrack, startRemote
 local function chooseNext(direction)
   if #songs == 0 then return nil end
   if shuffle and #songs > 1 then
@@ -185,7 +201,30 @@ local function chooseNext(direction)
   return nextIndex
 end
 
+local function popRemoteQueue()
+  if #remoteQueue == 0 then return nil end
+  local index = shuffle and math.random(1, #remoteQueue) or 1
+  return table.remove(remoteQueue, index)
+end
+
 local function finishTrack()
+  if remoteTrack then
+    local finished = remoteTrack
+    closeAudio()
+    playing, paused = false, false
+    if repeatMode == 2 then
+      startRemote(finished)
+      return
+    end
+    if repeatMode == 1 then remoteQueue[#remoteQueue + 1] = finished end
+    local nextTrack = popRemoteQueue()
+    if nextTrack then
+      startRemote(nextTrack)
+    else
+      statusText, statusColor = "QUEUE COMPLETE", colors.lime
+    end
+    return
+  end
   closeAudio()
   playing, paused = false, false
   if #songs == 0 then return end
@@ -234,6 +273,8 @@ startTrack = function(index)
   end
   stopSpeakers()
   closeAudio()
+  remoteLoadingUrl = nil
+  remoteTrack = nil
   current = math.max(1, math.min(tonumber(index) or current, #songs))
   audioFile = fs.open(songs[current].path, "rb")
   if not audioFile then
@@ -247,8 +288,69 @@ startTrack = function(index)
   feedAudio()
 end
 
+startRemote = function(track)
+  if type(track) ~= "table" or not track.id then
+    statusText, statusColor = "INVALID ONLINE TRACK", colors.red
+    return
+  end
+  if #speakers == 0 then
+    statusText, statusColor = "NO SPEAKER", colors.red
+    return
+  end
+  stopSpeakers()
+  closeAudio()
+  remoteTrack = track
+  playing, paused, bytesRead = false, false, 0
+  statusText, statusColor = "LOADING ONLINE TRACK", colors.yellow
+  remoteLoadingUrl = onlineApi .. "?v=" .. onlineApiVersion .. "&id=" ..
+    textutils.urlEncode(tostring(track.id))
+  local ok, err = http.request({ url=remoteLoadingUrl, binary=true, redirect=true, timeout=30 })
+  if not ok then
+    remoteLoadingUrl = nil
+    statusText, statusColor = "STREAM REQUEST FAILED", colors.red
+    terminalStatus = tostring(err or "REQUEST FAILED")
+  end
+end
+
+local function addRemoteTrack(track, playNow)
+  if type(track) ~= "table" then return end
+  if track.type == "playlist" and type(track.playlist_items) == "table" then
+    for index, item in ipairs(track.playlist_items) do
+      addRemoteTrack(item, playNow and index == 1)
+    end
+    return
+  end
+  if not track.id then return end
+  if playNow then
+    startRemote(track)
+  elseif not playing and not remoteLoadingUrl then
+    startRemote(track)
+  else
+    remoteQueue[#remoteQueue + 1] = track
+    statusText, statusColor = "ADDED TO QUEUE", colors.lightBlue
+  end
+end
+
+local function startSearch()
+  local query = searchQuery:gsub("^%s+", ""):gsub("%s+$", "")
+  if query == "" then return end
+  searchUrl = onlineApi .. "?v=" .. onlineApiVersion .. "&search=" .. textutils.urlEncode(query)
+  searchResults, searchSelected, searchOffset = {}, 1, 1
+  terminalMode = "loading"
+  terminalStatus = "SEARCHING..."
+  local ok, err = http.request({ url=searchUrl, redirect=true, timeout=20 })
+  if not ok then
+    searchUrl = nil
+    terminalMode = "input"
+    terminalStatus = tostring(err or "SEARCH REQUEST FAILED")
+  end
+end
+
 local function togglePause()
-  if not playing then startTrack(current) return end
+  if not playing then
+    if remoteTrack then startRemote(remoteTrack) else startTrack(current) end
+    return
+  end
   if paused then
     paused = false
     statusText, statusColor = "NOW PLAYING", colors.lime
@@ -312,6 +414,47 @@ local function scrollingTitle(title, width)
   return padded:sub(offset + 1, offset + width)
 end
 
+local function activeSong()
+  if remoteTrack then
+    return {
+      title=tostring(remoteTrack.name or "ONLINE TRACK"),
+      artist=tostring(remoteTrack.artist or "ONLINE"),
+      size=0,
+      online=true
+    }
+  end
+  return songs[current]
+end
+
+local function drawLine(x1, y1, x2, y2, color, character)
+  local dx, sx = math.abs(x2 - x1), x1 < x2 and 1 or -1
+  local dy, sy = -math.abs(y2 - y1), y1 < y2 and 1 or -1
+  local err = dx + dy
+  while true do
+    writeAt(x1, y1, character or "*", color, colors.black)
+    if x1 == x2 and y1 == y2 then break end
+    local doubled = 2 * err
+    if doubled >= dy then err, x1 = err + dy, x1 + sx end
+    if doubled <= dx then err, y1 = err + dx, y1 + sy end
+  end
+end
+
+local function drawAnimatedStar(centerX, centerY, radiusX, radiusY)
+  local phase = math.floor(os.clock() * 4) % 3
+  local shades = { colors.blue, colors.lightBlue, colors.white }
+  local function shade(offset) return shades[(phase + offset) % #shades + 1] end
+  local topY, bottomY = centerY - radiusY, centerY + radiusY
+  local upperBaseY = centerY + math.floor(radiusY / 2)
+  local lowerBaseY = centerY - math.floor(radiusY / 2)
+  drawLine(centerX, topY, centerX - radiusX, upperBaseY, shade(0), "*")
+  drawLine(centerX - radiusX, upperBaseY, centerX + radiusX, upperBaseY, shade(1), "*")
+  drawLine(centerX + radiusX, upperBaseY, centerX, topY, shade(2), "*")
+  drawLine(centerX, bottomY, centerX - radiusX, lowerBaseY, shade(2), "*")
+  drawLine(centerX - radiusX, lowerBaseY, centerX + radiusX, lowerBaseY, shade(0), "*")
+  drawLine(centerX + radiusX, lowerBaseY, centerX, bottomY, shade(1), "*")
+  writeAt(centerX, centerY, "+", colors.white, colors.black)
+end
+
 local function draw()
   local width, height = monitor.getSize()
   buttons = {}
@@ -323,15 +466,16 @@ local function draw()
   fill(1, 3, width, 3, colors.blue)
   centered(2, "< ISRAEL MUSIC >", colors.blue, colors.white)
   writeAt(2, 4, statusText, statusColor, colors.black)
-  local connection = tostring(#speakers) .. " SPK  " .. tostring(#songs) .. " TRACKS"
+  local connection = tostring(#speakers) .. " SPK  " .. tostring(#remoteQueue) .. " QUEUED"
   writeAt(math.max(2, width - #connection), 4, connection,
     #speakers > 0 and colors.lightBlue or colors.red, colors.black)
 
-  local song = songs[current]
+  local song = activeSong()
   fill(2, 6, width - 1, 10, colors.gray)
   writeAt(4, 6, playing and "NOW PLAYING" or "SELECTED", colors.lightBlue, colors.gray)
-  centered(8, scrollingTitle(song and song.title or "NO DFPWM TRACKS", math.max(8, width - 6)),
+  centered(8, scrollingTitle(song and song.title or "SEARCH ON THE COMPUTER", math.max(8, width - 6)),
     colors.white, colors.gray)
+  if song and song.artist then centered(9, tostring(song.artist):sub(1, width - 6), colors.lightGray, colors.gray) end
   local progress = song and song.size > 0 and math.min(1, bytesRead / song.size) or 0
   local barX1, barX2 = 4, width - 3
   fill(barX1, 10, barX2, 10, colors.black)
@@ -339,7 +483,7 @@ local function draw()
     fill(barX1, 10, barX1 + math.floor((barX2 - barX1 + 1) * progress) - 1, 10, colors.lightBlue)
   end
   local elapsed = formatTime(bytesRead / bytesPerSecond)
-  local duration = formatTime(song and song.size / bytesPerSecond or 0)
+  local duration = song and song.online and "LIVE" or formatTime(song and song.size / bytesPerSecond or 0)
   writeAt(4, 11, elapsed, colors.lightGray, colors.black)
   writeAt(math.max(4, width - #duration - 2), 11, duration, colors.lightGray, colors.black)
 
@@ -369,54 +513,216 @@ local function draw()
   addButton("volup", width - 6, 20, width - 1, 21, "VOL +", colors.gray, colors.white)
 
   local listTop, listBottom = 23, height - 3
-  writeAt(2, listTop, "PLAYLIST", colors.lightBlue, colors.black)
+  local queueX = math.max(17, math.floor(width * 0.38))
+  writeAt(queueX, listTop, "UP NEXT / QUEUE", colors.lightBlue, colors.black)
+  drawAnimatedStar(math.floor((queueX - 1) / 2), math.floor((listTop + listBottom) / 2),
+    math.max(4, math.floor((queueX - 4) / 2)), math.max(4, math.floor((listBottom - listTop) / 2) - 1))
   local visibleRows = math.max(0, listBottom - listTop)
-  if current < listOffset then listOffset = current end
-  if current >= listOffset + visibleRows then listOffset = current - visibleRows + 1 end
-  listOffset = math.max(1, math.min(listOffset, math.max(1, #songs - visibleRows + 1)))
+  queueOffset = math.max(1, math.min(queueOffset, math.max(1, #remoteQueue - visibleRows + 1)))
   for row = 1, visibleRows do
-    local index = listOffset + row - 1
-    local item = songs[index]
+    local index = queueOffset + row - 1
+    local item = remoteQueue[index]
     if not item then break end
     local y = listTop + row
-    local selected = index == current
-    local prefix = selected and (playing and not paused and "> " or "* ") or "  "
-    fill(2, y, width - 1, y, selected and colors.blue or colors.black)
-    writeAt(3, y, prefix .. tostring(index) .. ". " .. item.title,
-      selected and colors.white or colors.lightGray, selected and colors.blue or colors.black)
-    buttons[#buttons + 1] = { action="song", index=index, x1=2, y1=y, x2=width - 1, y2=y }
+    local label = tostring(index) .. ". " .. tostring(item.name or "UNKNOWN")
+    writeAt(queueX, y, label, row == 1 and colors.white or colors.lightGray, colors.black)
   end
+  if #remoteQueue == 0 then writeAt(queueX, listTop + 2, "QUEUE IS EMPTY", colors.gray, colors.black) end
 
-  addButton("up", 2, height - 1, 10, height, "UP", colors.blue, colors.white)
-  addButton("refresh", math.max(12, math.floor(width / 2) - 5), height - 1,
-    math.min(width - 12, math.floor(width / 2) + 5), height, "REFRESH", colors.gray, colors.white)
-  addButton("down", width - 9, height - 1, width - 1, height, "DOWN", colors.blue, colors.white)
+  addButton("up", 2, height - 1, 10, height, "Q UP", colors.blue, colors.white)
+  addButton("clearqueue", math.max(12, math.floor(width / 2) - 5), height - 1,
+    math.min(width - 12, math.floor(width / 2) + 5), height, "CLEAR Q", colors.gray, colors.white)
+  addButton("down", width - 9, height - 1, width - 1, height, "Q DOWN", colors.blue, colors.white)
 end
 
 local function runAction(button)
   flashAction, flashUntil = button.action, os.clock() + 0.18
   if button.action == "toggle" then togglePause()
   elseif button.action == "stop" then stopTrack("STOPPED")
-  elseif button.action == "prev" then startTrack(chooseNext(-1))
-  elseif button.action == "next" then startTrack(chooseNext(1))
+  elseif button.action == "prev" then
+    if remoteTrack then startRemote(remoteTrack) else startTrack(chooseNext(-1)) end
+  elseif button.action == "next" then
+    if remoteTrack then
+      local nextTrack = popRemoteQueue()
+      if nextTrack then startRemote(nextTrack) else stopTrack("QUEUE IS EMPTY") end
+    else startTrack(chooseNext(1)) end
   elseif button.action == "repeat" then repeatMode = (repeatMode + 1) % 3
   elseif button.action == "shuffle" then shuffle = not shuffle
   elseif button.action == "voldown" then volume = math.max(0, volume - 0.25)
   elseif button.action == "volup" then volume = math.min(3, volume + 0.25)
-  elseif button.action == "up" then listOffset = math.max(1, listOffset - 1)
-  elseif button.action == "down" then listOffset = math.min(math.max(1, #songs), listOffset + 1)
-  elseif button.action == "refresh" then loadSongs()
-  elseif button.action == "song" then startTrack(button.index) end
+  elseif button.action == "up" then queueOffset = math.max(1, queueOffset - 1)
+  elseif button.action == "down" then queueOffset = math.min(math.max(1, #remoteQueue), queueOffset + 1)
+  elseif button.action == "clearqueue" then remoteQueue, queueOffset = {}, 1 end
+end
+
+local function termWrite(x, y, text, foreground, background)
+  local width, height = term.getSize()
+  if y < 1 or y > height or x > width then return end
+  term.setCursorPos(math.max(1, x), y)
+  term.setTextColor(foreground or colors.white)
+  term.setBackgroundColor(background or colors.black)
+  term.write(tostring(text):sub(1, math.max(0, width - x + 1)))
+end
+
+local function termFill(y, background)
+  local width = term.getSize()
+  term.setCursorPos(1, y)
+  term.setBackgroundColor(background)
+  term.write(string.rep(" ", width))
+end
+
+local function drawTerminal()
+  local width, height = term.getSize()
+  term.setBackgroundColor(colors.black)
+  term.setTextColor(colors.white)
+  term.clear()
+  termFill(1, colors.blue)
+  termFill(2, colors.white)
+  termFill(3, colors.blue)
+  local heading = "ISRAEL MUSIC ONLINE SEARCH"
+  termWrite(math.max(1, math.floor((width - #heading) / 2) + 1), 2,
+    heading, colors.blue, colors.white)
+  termWrite(2, 5, terminalStatus, terminalMode == "loading" and colors.yellow or colors.lightBlue, colors.black)
+
+  if terminalMode == "input" or terminalMode == "loading" then
+    termWrite(2, 7, "SEARCH / YOUTUBE URL", colors.lightGray, colors.black)
+    termFill(8, colors.gray)
+    termWrite(2, 8, "> " .. searchQuery, colors.white, colors.gray)
+    termWrite(2, height - 1, "ENTER SEARCH   CTRL+T EXIT", colors.gray, colors.black)
+    if terminalMode == "input" then
+      term.setCursorPos(math.min(width, 4 + #searchQuery), 8)
+      term.setCursorBlink(true)
+    else
+      term.setCursorBlink(false)
+    end
+    return
+  end
+
+  term.setCursorBlink(false)
+  termWrite(2, 7, "RESULTS FOR: " .. searchQuery, colors.lightGray, colors.black)
+  local resultRows = math.max(1, height - 10)
+  if searchSelected < searchOffset then searchOffset = searchSelected end
+  if searchSelected >= searchOffset + resultRows then searchOffset = searchSelected - resultRows + 1 end
+  searchOffset = math.max(1, math.min(searchOffset, math.max(1, #searchResults - resultRows + 1)))
+  for row = 1, resultRows do
+    local index = searchOffset + row - 1
+    local result = searchResults[index]
+    if not result then break end
+    local y = 7 + row
+    local selected = index == searchSelected
+    if selected then termFill(y, colors.blue) end
+    local label = tostring(index) .. ". " .. tostring(result.name or "UNKNOWN") ..
+      " - " .. tostring(result.artist or "UNKNOWN")
+    termWrite(2, y, label, selected and colors.white or colors.lightGray,
+      selected and colors.blue or colors.black)
+  end
+  if #searchResults == 0 then termWrite(2, 9, "NO RESULTS", colors.orange, colors.black) end
+  termWrite(2, height - 1, "UP/DOWN  ENTER QUEUE  P PLAY NOW", colors.lightBlue, colors.black)
+  termWrite(2, height, "BACKSPACE NEW SEARCH", colors.gray, colors.black)
+end
+
+local function selectedSearchResult()
+  return searchResults[searchSelected]
+end
+
+local function handleSearchSuccess(handle)
+  local body = handle.readAll()
+  handle.close()
+  local payload = textutils.unserializeJSON(body or "")
+  if type(payload) ~= "table" then
+    searchResults = {}
+    terminalStatus = "INVALID SEARCH RESPONSE"
+  else
+    searchResults = {}
+    for _, result in ipairs(payload) do
+      local name = tostring(type(result) == "table" and result.name or "")
+      if type(result) == "table" and (result.id or result.type == "playlist") and
+          not name:lower():find("patreon", 1, true) then
+        searchResults[#searchResults + 1] = result
+      end
+    end
+    terminalStatus = tostring(#searchResults) .. " RESULTS - ENTER ADDS TO QUEUE"
+  end
+  searchSelected, searchOffset = 1, 1
+  terminalMode = "results"
+  searchUrl = nil
+end
+
+local function handleStreamSuccess(handle)
+  audioFile = handle
+  decoder = dfpwm.make_decoder()
+  pendingPcm, pendingAccepted = nil, {}
+  bytesRead = 0
+  playing, paused = true, false
+  remoteLoadingUrl = nil
+  statusText, statusColor = "STREAMING ONLINE", colors.lime
+  terminalStatus = "PLAYING: " .. tostring(remoteTrack and remoteTrack.name or "ONLINE TRACK")
+  feedAudio()
+end
+
+local function handleHttpFailure(url, message, response)
+  if response then pcall(response.close) end
+  if url == searchUrl then
+    searchUrl = nil
+    terminalMode = "input"
+    terminalStatus = "SEARCH FAILED: " .. tostring(message or "NETWORK ERROR")
+  elseif url == remoteLoadingUrl then
+    remoteLoadingUrl = nil
+    playing, paused = false, false
+    statusText, statusColor = "ONLINE STREAM FAILED", colors.red
+    terminalStatus = "STREAM FAILED: " .. tostring(message or "NETWORK ERROR")
+  end
+end
+
+local function handleKeyboard(event, value)
+  if terminalMode == "input" then
+    if event == "char" then
+      searchQuery = searchQuery .. tostring(value)
+    elseif event == "paste" then
+      searchQuery = searchQuery .. tostring(value)
+    elseif event == "key" and value == keys.backspace then
+      searchQuery = searchQuery:sub(1, math.max(0, #searchQuery - 1))
+    elseif event == "key" and value == keys.enter then
+      startSearch()
+    elseif event == "key" and value == keys.delete then
+      searchQuery = ""
+    end
+  elseif terminalMode == "results" and event == "key" then
+    if value == keys.up then
+      searchSelected = math.max(1, searchSelected - 1)
+    elseif value == keys.down then
+      searchSelected = math.min(math.max(1, #searchResults), searchSelected + 1)
+    elseif value == keys.enter then
+      local result = selectedSearchResult()
+      if result then
+        addRemoteTrack(result, false)
+        terminalStatus = "ADDED TO QUEUE: " .. tostring(result.name or "TRACK")
+      end
+    elseif value == keys.backspace or value == keys.escape then
+      terminalMode = "input"
+      terminalStatus = "TYPE A NEW SEARCH"
+    end
+  elseif terminalMode == "results" and event == "char" and tostring(value):lower() == "p" then
+    local result = selectedSearchResult()
+    if result then
+      addRemoteTrack(result, true)
+      terminalStatus = "PLAY NOW: " .. tostring(result.name or "TRACK")
+    end
+  elseif terminalMode == "loading" and event == "key" and value == keys.backspace then
+    terminalMode = "input"
+    terminalStatus = "SEARCH STILL RUNNING - TYPE A NEW QUERY"
+  end
 end
 
 refreshSpeakers()
 loadSongs()
 if #speakers == 0 then statusText, statusColor = "NO SPEAKER CONNECTED", colors.red
-elseif #songs == 0 then statusText, statusColor = "ADD DFPWM TRACKS", colors.orange end
+elseif #songs == 0 then statusText, statusColor = "SEARCH MUSIC ON COMPUTER", colors.lightBlue end
 
 local function mainLoop()
   local redrawTimer = os.startTimer(0.25)
   draw()
+  drawTerminal()
   while true do
     local event, a, b, c = os.pullEvent()
     if event == "monitor_touch" then
@@ -431,10 +737,29 @@ local function mainLoop()
         end
         draw()
       end
+    elseif event == "char" or event == "paste" or event == "key" then
+      handleKeyboard(event, a)
+      drawTerminal()
+      draw()
+    elseif event == "http_success" then
+      if a == searchUrl then
+        handleSearchSuccess(b)
+      elseif a == remoteLoadingUrl then
+        handleStreamSuccess(b)
+      elseif b then
+        pcall(b.close)
+      end
+      drawTerminal()
+      draw()
+    elseif event == "http_failure" then
+      handleHttpFailure(a, b, c)
+      drawTerminal()
+      draw()
     elseif event == "speaker_audio_empty" then
       feedAudio()
     elseif event == "timer" and a == redrawTimer then
       draw()
+      drawTerminal()
       redrawTimer = os.startTimer(0.25)
     elseif event == "monitor_resize" then
       draw()
@@ -442,6 +767,7 @@ local function mainLoop()
       refreshSpeakers()
       if #speakers == 0 and playing then stopTrack("SPEAKER DISCONNECTED") end
       draw()
+      drawTerminal()
     end
   end
 end
@@ -453,4 +779,9 @@ monitor.setBackgroundColor(colors.black)
 monitor.setTextColor(colors.white)
 monitor.clear()
 monitor.setCursorPos(1, 1)
+term.setCursorBlink(false)
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.white)
+term.clear()
+term.setCursorPos(1, 1)
 if not ok and tostring(failure) ~= "Terminated" then error(failure, 0) end
