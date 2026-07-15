@@ -15,6 +15,8 @@ const TEAM_PROPERTY_PREFIX = "BLUEMAP_TEAM_DATA_V4_";
 const PROPERTY_CHUNK_SIZE = 8000;
 const MEMORY_CACHE_SECONDS = 21600;
 const TEAM_REFRESH_MILLISECONDS = 10 * 60 * 1000;
+const PLAYER_CACHE_KEY = "bluemap-live-players-v1";
+const PLAYER_CACHE_SECONDS = 6;
 
 function fetchJson_(path) {
   const response = UrlFetchApp.fetch(BLUEMAP_BASE + path, {
@@ -27,6 +29,18 @@ function fetchJson_(path) {
     throw new Error(path + " returned HTTP " + code);
   }
   return JSON.parse(response.getContentText());
+}
+
+function livePlayerData_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(PLAYER_CACHE_KEY);
+  if (cached) return JSON.parse(cached);
+  const playerData = fetchJson_("/maps/world/live/players.json");
+  const encoded = JSON.stringify(playerData);
+  if (encoded.length < 95000) {
+    cache.put(PLAYER_CACHE_KEY, encoded, PLAYER_CACHE_SECONDS);
+  }
+  return playerData;
 }
 
 function teamName_(marker) {
@@ -228,7 +242,7 @@ function doGet(e) {
     // Player requests always use the last stored team snapshot. They never
     // download markers.json and therefore remain small and fast.
     const stored = teamDefinitions_(forceRefresh, mode === "players");
-    const playerData = fetchJson_("/maps/world/live/players.json");
+    const playerData = livePlayerData_();
     const rawPlayers = Array.isArray(playerData.players) ? playerData.players : [];
     const onlineByName = {};
     rawPlayers.forEach(function(player) {
