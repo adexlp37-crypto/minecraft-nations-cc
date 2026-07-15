@@ -1,7 +1,7 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "10"
+local version = "11"
 
 local retiredFiles = {
   "notes.lua", "fieldnav.lua", "hello.lua", "piano.lua", "scanner2.lua",
@@ -73,7 +73,8 @@ local function download(url, headers)
   local response, err = http.get({
     url = url,
     headers = headers,
-    redirect = true
+    redirect = true,
+    timeout = 15
   })
   if not response then
     return nil, err or "Unknown HTTP error"
@@ -203,7 +204,9 @@ end
 print("Checking GitHub version...")
 local commit, commitError = latestCommit()
 if not commit then
-  error("Could not check GitHub version: " .. commitError, 0)
+  print("GitHub API unavailable; using main branch.")
+  print(tostring(commitError))
+  commit = branch
 end
 
 local baseUrl = ("https://raw.githubusercontent.com/%s/%s/%s/computercraft/")
@@ -216,6 +219,7 @@ if not files then
 end
 
 local selfUpdated = false
+local legacyLauncherRepaired = false
 for index, filename in ipairs(files) do
   write(("[%d/%d] %s ... "):format(index, #files, filename))
   local contents, err = download(baseUrl .. filename)
@@ -233,9 +237,20 @@ for index, filename in ipairs(files) do
     end
     print("OK")
   end
+
+  -- Older installs were saved as `updater` without the .lua extension. CC's
+  -- shell prefers that exact file, so it would keep launching the obsolete
+  -- copy forever even after updater.lua was refreshed.
+  if filename == "updater.lua" and readFile("updater") ~= contents then
+    install("updater", contents)
+    legacyLauncherRepaired = true
+  end
 end
 
 print("Install complete.")
+if legacyLauncherRepaired then
+  print("Legacy updater launcher repaired.")
+end
 if selfUpdated then
-  print("Installer was updated. Run your command again to install the selected package.")
+  print("Installer updated successfully.")
 end
