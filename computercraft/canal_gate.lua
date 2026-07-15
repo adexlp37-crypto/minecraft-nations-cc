@@ -1,6 +1,6 @@
 local configFile = ".canal_gate.cfg"
 local accessFile = ".canal_access.txt"
-local defaultTrackerUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
+local defaultTrackerUrl = "https://minecraft-nations-cc.adexlp37.workers.dev"
 local validSides = { top=true, bottom=true, left=true, right=true, front=true, back=true }
 
 local function prompt(label, default)
@@ -25,6 +25,9 @@ local function setup()
   config.webhookUrl = prompt("Discord webhook URL (blank disables)", "")
   repeat config.gateSide = prompt("Gate redstone output side", "back"):lower()
   until validSides[config.gateSide]
+  repeat config.manualOpenSide = prompt("Emergency OPEN input side (blank disables)", "top"):lower()
+  until config.manualOpenSide == "" or
+    (validSides[config.manualOpenSide] and config.manualOpenSide ~= config.gateSide)
   config.activeHigh = prompt("Does redstone ON open the gate? y/n", "y"):lower() ~= "n"
   config.pollSeconds = math.max(1, numberPrompt("BlueMap refresh seconds", 3))
   config.holdSeconds = math.max(2, numberPrompt("Keep-open safety delay seconds", 10))
@@ -54,6 +57,12 @@ local function loadConfig()
   return type(config) == "table" and config or nil
 end
 
+local function saveConfig(config)
+  local file = assert(fs.open(configFile, "w"))
+  file.write(textutils.serialize(config))
+  file.close()
+end
+
 local function loadAccess()
   local names = {}
   if not fs.exists(accessFile) then return names end
@@ -78,6 +87,28 @@ end
 local args = { ... }
 local command = (args[1] or "run"):lower()
 if command == "setup" then setup(); return end
+if command == "url" then
+  if not args[2] then error("Usage: canal_gate url <proxy URL>", 0) end
+  local config = loadConfig()
+  if not config then error("Run canal_gate setup first.", 0) end
+  config.trackerUrl = args[2]
+  saveConfig(config)
+  print("Tracker URL updated.")
+  return
+elseif command == "manual" then
+  if not args[2] then error("Usage: canal_gate manual <side|off>", 0) end
+  local config = loadConfig()
+  if not config then error("Run canal_gate setup first.", 0) end
+  local side = args[2]:lower()
+  if side == "off" or side == "none" then side = "" end
+  if side ~= "" and (not validSides[side] or side == config.gateSide) then
+    error("Choose top, bottom, left, right, front, back, or off; not the gate output side.", 0)
+  end
+  config.manualOpenSide = side
+  saveConfig(config)
+  print(side == "" and "Emergency OPEN input disabled." or ("Emergency OPEN input: " .. side))
+  return
+end
 if command == "add" or command == "remove" then
   if not args[2] then error("Usage: canal_gate " .. command .. " PlayerName", 0) end
   local names = loadAccess()
@@ -94,7 +125,7 @@ elseif command == "list" then
   if count == 0 then print("(none - gate will remain closed)") end
   return
 elseif command ~= "run" then
-  print("Commands: setup, add <name>, remove <name>, list, run")
+  print("Commands: setup, url <URL>, manual <side|off>, add <name>, remove <name>, list, run")
   return
 end
 
@@ -109,7 +140,9 @@ local speaker = peripheral.find("speaker")
 local monitor = peripheral.find("monitor")
 if monitor then monitor.setTextScale(1) end
 local display = monitor or term
-local gateOpen = false
+-- Adopt the physical output that is already present. Restarting the computer
+-- during an outage must not silently change an open gate to closed.
+local gateOpen = redstone.getOutput(config.gateSide) == config.activeHigh
 local lastAuthorizedSeen = -math.huge
 local openingAt, arrivalPlayed
 local previousPassage, passageCooldown = {}, {}
@@ -177,7 +210,7 @@ local function fetchPlayers()
   return data.players
 end
 
-local function draw(players, authorizedNearby, connectionOkay)
+local function draw(players, authorizedNearby, connectionOkay, manualOpen)
   local width = display.getSize()
   display.setBackgroundColor(colors.black); display.clear()
   display.setCursorPos(1, 1); display.setTextColor(colors.cyan)
@@ -186,25 +219,28 @@ local function draw(players, authorizedNearby, connectionOkay)
   display.setTextColor(gateOpen and colors.lime or colors.red)
   display.write(gateOpen and "GATE: OPEN" or "GATE: CLOSED")
   display.setCursorPos(1, 3); display.setTextColor(connectionOkay and colors.green or colors.orange)
-  display.write(connectionOkay and "BLUEMAP: ONLINE" or "BLUEMAP: ERROR")
+  display.write(connectionOkay and "BLUEMAP: ONLINE" or "DATA STALE: HOLDING")
   display.setCursorPos(1, 4); display.setTextColor(colors.white)
   display.write("Authorized nearby: " .. tostring(authorizedNearby))
   display.setCursorPos(1, 5); display.setTextColor(colors.lightGray)
   display.write("Players received: " .. tostring(players and #players or 0))
+  if manualOpen then
+    display.setCursorPos(1, 6); display.setTextColor(colors.yellow)
+    display.write("EMERGENCY OPEN ACTIVE")
+  end
   if lastError ~= "" then
     display.setCursorPos(1, 7); display.setTextColor(colors.orange)
     display.write(lastError:sub(1, width))
   end
 end
 
--- Fail closed at startup. The hold timer only applies after a valid authorized detection.
-redstone.setOutput(config.gateSide, not config.activeHigh)
-
 local function run()
   while true do
     local now = os.clock()
     local access = loadAccess()
     local players, err = fetchPlayers()
+    local manualOpen = config.manualOpenSide and config.manualOpenSide ~= "" and
+      redstone.getInput(config.manualOpenSide)
     local authorizedNearby = 0
     local notifications = {}
     if players then
@@ -235,18 +271,26 @@ local function run()
       lastError = "BlueMap: " .. tostring(err)
     end
 
-    local shouldOpen = authorizedNearby > 0 or (gateOpen and now - lastAuthorizedSeen < config.holdSeconds)
-    setGate(shouldOpen)
+    if manualOpen then
+      setGate(true)
+    elseif players then
+      local shouldOpen = authorizedNearby > 0 or
+        (gateOpen and now - lastAuthorizedSeen < config.holdSeconds)
+      setGate(shouldOpen)
+    end
+    -- On stale data, preserve the current gate state. A local redstone input
+    -- can still open the gate, preventing a network outage from locking users out.
     if gateOpen and openingAt and not arrivalPlayed and now - openingAt >= config.travelSeconds then
       arrivalPlayed = true
       arrivedSound()
     end
     for _, notification in ipairs(notifications) do webhook(notification) end
-    draw(players, authorizedNearby, players ~= nil)
+    draw(players, authorizedNearby, players ~= nil, manualOpen)
     sleep(config.pollSeconds)
   end
 end
 
 local ok, err = xpcall(run, function(message) return tostring(message) end)
-redstone.setOutput(config.gateSide, not config.activeHigh)
+-- Preserve the last physical gate state on a crash as well. The emergency
+-- input remains the operator override while the controller is running.
 if not ok then error(err, 0) end

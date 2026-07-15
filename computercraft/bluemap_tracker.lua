@@ -1,5 +1,5 @@
 local configFile = ".bluemap_tracker.cfg"
-local defaultUrl = "https://script.google.com/macros/s/AKfycbw9DD4BqpG0ruyu86A0wn5VwZ8zbofbI16fvZu1nhu2SZ4Vyg6TGIrh2UQy763e3H2l/exec"
+local defaultUrl = "https://minecraft-nations-cc.adexlp37.workers.dev"
 
 local function loadConfig()
   if not fs.exists(configFile) then
