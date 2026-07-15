@@ -6,6 +6,7 @@ local proxyUrls = {
 }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
+local dashboardVersion = "13"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
 local animationSeconds = 0.5
@@ -280,7 +281,7 @@ local function drawHeader(title, accent)
   local width, height = target.getSize()
   target.setBackgroundColor(colors.black)
   target.clear()
-  writeAt(target, 2, 1, title, colors.white, colors.black)
+  writeAt(target, 2, 1, title .. "  v" .. dashboardVersion, colors.white, colors.black)
   if width > 42 then
     local liveAge = lastPlayerUpdate and os.epoch and
       math.max(0, math.floor((os.epoch("utc") - lastPlayerUpdate) / 1000)) or nil
@@ -710,7 +711,9 @@ local function requestProxy(kind)
   local proxyUrl = proxyUrls[proxyIndex]
   local separator = proxyUrl:find("?", 1, true) and "&" or "?"
   local stamp = tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
-  local url = proxyUrl .. separator .. "mode=" .. kind .. "&dashboard=" .. stamp
+  local modeParameter = proxyUrl:find("workers.dev", 1, true) and
+    ("mode=" .. kind .. "&") or ""
+  local url = proxyUrl .. separator .. modeParameter .. "dashboard=" .. stamp
   local callOk, ok, err = pcall(http.request, {
     url=url,
     redirect=true,
