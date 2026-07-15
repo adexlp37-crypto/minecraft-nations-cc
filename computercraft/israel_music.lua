@@ -1,6 +1,6 @@
 local args = { ... }
 local musicDir = "music"
-local version = "2.0"
+local version = "2.1"
 local bytesPerSecond = 6000
 local chunkSize = 4096
 -- Search/stream protocol used by the public Rc1PCzLH player.
@@ -470,69 +470,70 @@ local function draw()
   writeAt(math.max(2, width - #connection), 4, connection,
     #speakers > 0 and colors.lightBlue or colors.red, colors.black)
 
+  -- Keep the animated star wide and high while the touch UI stays near the player.
+  local starRadiusX = math.max(7, math.min(math.floor(width * 0.42), math.floor(width / 2) - 2))
+  drawAnimatedStar(math.floor(width / 2), 9, starRadiusX, 4)
+
   local song = activeSong()
-  fill(2, 6, width - 1, 10, colors.gray)
-  writeAt(4, 6, playing and "NOW PLAYING" or "SELECTED", colors.lightBlue, colors.gray)
-  centered(8, scrollingTitle(song and song.title or "SEARCH ON THE COMPUTER", math.max(8, width - 6)),
+  fill(2, 15, width - 1, 19, colors.gray)
+  writeAt(4, 15, playing and "NOW PLAYING" or "SELECTED", colors.lightBlue, colors.gray)
+  centered(17, scrollingTitle(song and song.title or "SEARCH ON THE COMPUTER", math.max(8, width - 6)),
     colors.white, colors.gray)
-  if song and song.artist then centered(9, tostring(song.artist):sub(1, width - 6), colors.lightGray, colors.gray) end
+  if song and song.artist then centered(18, tostring(song.artist):sub(1, width - 6), colors.lightGray, colors.gray) end
   local progress = song and song.size > 0 and math.min(1, bytesRead / song.size) or 0
   local barX1, barX2 = 4, width - 3
-  fill(barX1, 10, barX2, 10, colors.black)
+  fill(barX1, 19, barX2, 19, colors.black)
   if progress > 0 then
-    fill(barX1, 10, barX1 + math.floor((barX2 - barX1 + 1) * progress) - 1, 10, colors.lightBlue)
+    fill(barX1, 19, barX1 + math.floor((barX2 - barX1 + 1) * progress) - 1, 19, colors.lightBlue)
   end
   local elapsed = formatTime(bytesRead / bytesPerSecond)
   local duration = song and song.online and "LIVE" or formatTime(song and song.size / bytesPerSecond or 0)
-  writeAt(4, 11, elapsed, colors.lightGray, colors.black)
-  writeAt(math.max(4, width - #duration - 2), 11, duration, colors.lightGray, colors.black)
+  writeAt(4, 20, elapsed, colors.lightGray, colors.black)
+  writeAt(math.max(4, width - #duration - 2), 20, duration, colors.lightGray, colors.black)
 
-  local gap = 1
-  local buttonWidth = math.floor((width - 4 - gap * 2) / 3)
-  local x1 = 2
-  local x2 = x1 + buttonWidth - 1
-  addButton("prev", x1, 13, x2, 15, "<<", colors.blue, colors.white)
-  x1, x2 = x2 + gap + 1, x2 + gap + buttonWidth
-  addButton("toggle", x1, 13, x2, 15, (paused or not playing) and "PLAY" or "PAUSE",
-    colors.lightBlue, colors.black)
-  x1 = x2 + gap + 1
-  addButton("next", x1, 13, width - 1, 15, ">>", colors.blue, colors.white)
-
-  local smallWidth = math.floor((width - 4 - gap * 2) / 3)
-  x1, x2 = 2, 2 + smallWidth - 1
-  addButton("stop", x1, 17, x2, 18, "STOP", colors.red, colors.white)
-  x1, x2 = x2 + gap + 1, x2 + gap + smallWidth
-  local repeatLabel = repeatMode == 0 and "LOOP OFF" or repeatMode == 1 and "LOOP ALL" or "LOOP ONE"
-  addButton("repeat", x1, 17, x2, 18, repeatLabel, colors.blue, colors.white)
-  x1 = x2 + gap + 1
-  addButton("shuffle", x1, 17, width - 1, 18, shuffle and "SHUFFLE ON" or "SHUFFLE",
-    shuffle and colors.lightBlue or colors.blue, shuffle and colors.black or colors.white)
-
-  addButton("voldown", 2, 20, 7, 21, "VOL -", colors.gray, colors.white)
-  centered(20, "VOLUME " .. tostring(math.floor(volume * 100 / 3)) .. "%", colors.white, colors.black)
-  addButton("volup", width - 6, 20, width - 1, 21, "VOL +", colors.gray, colors.white)
-
-  local listTop, listBottom = 23, height - 3
-  local queueX = math.max(17, math.floor(width * 0.38))
-  writeAt(queueX, listTop, "UP NEXT / QUEUE", colors.lightBlue, colors.black)
-  drawAnimatedStar(math.floor((queueX - 1) / 2), math.floor((listTop + listBottom) / 2),
-    math.max(4, math.floor((queueX - 4) / 2)), math.max(4, math.floor((listBottom - listTop) / 2) - 1))
-  local visibleRows = math.max(0, listBottom - listTop)
+  local navigationTop = math.max(24, height - 10)
+  local queueTop, queueBottom = 22, navigationTop - 2
+  writeAt(2, queueTop, "UP NEXT / QUEUE  " .. tostring(#remoteQueue), colors.lightBlue, colors.black)
+  addButton("up", width - 18, queueTop - 1, width - 13, queueTop, "UP", colors.blue, colors.white)
+  addButton("clearqueue", width - 11, queueTop - 1, width - 7, queueTop, "CLR", colors.gray, colors.white)
+  addButton("down", width - 5, queueTop - 1, width - 1, queueTop, "DN", colors.blue, colors.white)
+  local visibleRows = math.max(0, queueBottom - queueTop)
   queueOffset = math.max(1, math.min(queueOffset, math.max(1, #remoteQueue - visibleRows + 1)))
   for row = 1, visibleRows do
     local index = queueOffset + row - 1
     local item = remoteQueue[index]
     if not item then break end
-    local y = listTop + row
     local label = tostring(index) .. ". " .. tostring(item.name or "UNKNOWN")
-    writeAt(queueX, y, label, row == 1 and colors.white or colors.lightGray, colors.black)
+    writeAt(3, queueTop + row, label, row == 1 and colors.white or colors.lightGray, colors.black)
   end
-  if #remoteQueue == 0 then writeAt(queueX, listTop + 2, "QUEUE IS EMPTY", colors.gray, colors.black) end
+  if #remoteQueue == 0 and visibleRows > 0 then
+    writeAt(3, queueTop + 1, "QUEUE IS EMPTY", colors.gray, colors.black)
+  end
 
-  addButton("up", 2, height - 1, 10, height, "Q UP", colors.blue, colors.white)
-  addButton("clearqueue", math.max(12, math.floor(width / 2) - 5), height - 1,
-    math.min(width - 12, math.floor(width / 2) + 5), height, "CLEAR Q", colors.gray, colors.white)
-  addButton("down", width - 9, height - 1, width - 1, height, "Q DOWN", colors.blue, colors.white)
+  local gap = 1
+  local buttonWidth = math.floor((width - 4 - gap * 2) / 3)
+  local x1 = 2
+  local x2 = x1 + buttonWidth - 1
+  addButton("prev", x1, navigationTop, x2, navigationTop + 2, "<<", colors.blue, colors.white)
+  x1, x2 = x2 + gap + 1, x2 + gap + buttonWidth
+  addButton("toggle", x1, navigationTop, x2, navigationTop + 2, (paused or not playing) and "PLAY" or "PAUSE",
+    colors.lightBlue, colors.black)
+  x1 = x2 + gap + 1
+  addButton("next", x1, navigationTop, width - 1, navigationTop + 2, ">>", colors.blue, colors.white)
+
+  local smallWidth = math.floor((width - 4 - gap * 2) / 3)
+  x1, x2 = 2, 2 + smallWidth - 1
+  addButton("stop", x1, height - 6, x2, height - 5, "STOP", colors.red, colors.white)
+  x1, x2 = x2 + gap + 1, x2 + gap + smallWidth
+  local repeatLabel = repeatMode == 0 and "LOOP OFF" or repeatMode == 1 and "LOOP ALL" or "LOOP ONE"
+  addButton("repeat", x1, height - 6, x2, height - 5, repeatLabel, colors.blue, colors.white)
+  x1 = x2 + gap + 1
+  addButton("shuffle", x1, height - 6, width - 1, height - 5, shuffle and "SHUFFLE ON" or "SHUFFLE",
+    shuffle and colors.lightBlue or colors.blue, shuffle and colors.black or colors.white)
+
+  addButton("voldown", 2, height - 2, 7, height - 1, "VOL -", colors.gray, colors.white)
+  centered(height - 2, "VOLUME " .. tostring(math.floor(volume * 100 / 3)) .. "%", colors.white, colors.black)
+  addButton("volup", width - 6, height - 2, width - 1, height - 1, "VOL +", colors.gray, colors.white)
 end
 
 local function runAction(button)
