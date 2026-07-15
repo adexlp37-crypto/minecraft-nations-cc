@@ -1,5 +1,5 @@
 local configFile = ".base_control.cfg"
-local version = "1"
+local version = "2"
 
 local defaultProxies = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
@@ -11,8 +11,13 @@ local validSides = { top=true, bottom=true, left=true, right=true, front=true, b
 
 local function defaultConfig()
   return {
+    configVersion = 2,
     webhookUrl = "",
-    roleIds = { ally="", enemy="", unknown="" },
+    roleIds = {
+      ally="1525923176196866048",
+      enemy="1525922403283243048",
+      unknown="1525922526553968911"
+    },
     groups = { member={}, ally={}, enemy={} },
     doorSide = "right",
     closeSignal = true,
@@ -39,6 +44,17 @@ local function loadConfig()
   file.close()
   if type(config) ~= "table" then return nil end
   config.roleIds = type(config.roleIds) == "table" and config.roleIds or {}
+  if not tonumber(config.configVersion) or tonumber(config.configVersion) < 2 then
+    if tostring(config.roleIds.ally or "") == "" and
+        tostring(config.roleIds.enemy or "") == "" and
+        tostring(config.roleIds.unknown or "") == "" then
+      config.roleIds.ally = "1525923176196866048"
+      config.roleIds.enemy = "1525922403283243048"
+      config.roleIds.unknown = "1525922526553968911"
+    end
+    config.configVersion = 2
+    saveConfig(config)
+  end
   config.groups = type(config.groups) == "table" and config.groups or {}
   config.groups.member = type(config.groups.member) == "table" and config.groups.member or {}
   config.groups.ally = type(config.groups.ally) == "table" and config.groups.ally or {}
@@ -113,9 +129,38 @@ local function normalizeGroup(value)
   return value
 end
 
+local function printHelp()
+  print("BASE CONTROL v" .. version)
+  print("")
+  print("Installation and configuration:")
+  print("  base_control setup")
+  print("  base_control webhook")
+  print("  base_control door <side>")
+  print("  base_control signal <on|off>")
+  print("  base_control emergency <side|off>")
+  print("")
+  print("Player lists:")
+  print("  base_control add <member|ally|enemy> <name>")
+  print("  base_control remove <member|ally|enemy> <name>")
+  print("  base_control list")
+  print("")
+  print("Discord roles:")
+  print("  base_control role <ally|enemy|unknown> <role ID>")
+  print("")
+  print("Controller:")
+  print("  base_control run")
+  print("  base_control help")
+  print("")
+  print("Door logic: one selected redstone output controls")
+  print("the Redstone Link connected to every door.")
+  print("signal on = redstone ON closes all doors")
+  print("signal off = redstone OFF closes all doors")
+end
+
 local args = { ... }
 local command = tostring(args[1] or "run"):lower()
 
+if command == "help" or command == "-h" or command == "--help" then printHelp(); return end
 if command == "setup" then setup(); return end
 
 local config = loadConfig()
@@ -134,6 +179,37 @@ if command == "webhook" then
   config.webhookUrl = url
   saveConfig(config)
   print("Webhook saved locally. It is not stored on GitHub.")
+  return
+elseif command == "door" then
+  if not args[2] or not validSides[tostring(args[2]):lower()] then
+    error("Usage: base_control door <top|bottom|left|right|front|back>", 0)
+  end
+  local side = tostring(args[2]):lower()
+  if side == config.emergencyOpenSide then
+    error("Door output cannot use the emergency input side.", 0)
+  end
+  config.doorSide = side
+  saveConfig(config)
+  print("All-door Redstone Link output side: " .. side)
+  return
+elseif command == "signal" then
+  local value = tostring(args[2] or ""):lower()
+  if value ~= "on" and value ~= "off" then
+    error("Usage: base_control signal <on|off>", 0)
+  end
+  config.closeSignal = value == "on"
+  saveConfig(config)
+  print(value == "on" and "Redstone ON closes all doors." or "Redstone OFF closes all doors.")
+  return
+elseif command == "emergency" then
+  local side = tostring(args[2] or ""):lower()
+  if side == "off" or side == "none" then side = "" end
+  if side ~= "" and (not validSides[side] or side == config.doorSide) then
+    error("Usage: base_control emergency <side|off>; do not use the door output side.", 0)
+  end
+  config.emergencyOpenSide = side
+  saveConfig(config)
+  print(side == "" and "Emergency OPEN input disabled." or ("Emergency OPEN input side: " .. side))
   return
 elseif command == "role" then
   local group = normalizeGroup(args[2])
@@ -172,10 +248,7 @@ elseif command == "list" then
   end
   return
 elseif command ~= "run" then
-  print("Commands:")
-  print("  setup | webhook | role <type> <id>")
-  print("  add/remove <member|ally|enemy> <name>")
-  print("  list | run")
+  printHelp()
   return
 end
 
