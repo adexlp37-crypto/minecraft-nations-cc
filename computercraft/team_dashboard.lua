@@ -1,4 +1,9 @@
-local proxyUrl = "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec"
+local proxyUrls = {
+  "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
+  "https://script.google.com/macros/s/AKfycbwSsBb4SokTdVDhIUv0zTJzcMT8o_hJyzo7ziEdlMOYK8gACLHOKyQPZbpPnzTESiR5Jg/exec",
+  "https://script.google.com/macros/s/AKfycbyXcO7DJgloCLhteQixcPabIXHQTANvCyrMaOrLWjava--_iqFB-ItfgLTwbBpHzOV3/exec"
+}
+local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
 local playerRefreshSeconds = 6
 local teamRefreshSeconds = 600
@@ -46,6 +51,7 @@ local function compactNumber(value)
 end
 
 local function fetchData()
+  local proxyUrl = proxyUrls[activeProxy]
   local separator = proxyUrl:find("?", 1, true) and "&" or "?"
   local url = proxyUrl .. separator .. "dashboard=" ..
     tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
@@ -276,8 +282,8 @@ local function drawHeader(title, accent)
   if width > 42 then
     local liveAge = lastPlayerUpdate and os.epoch and
       math.max(0, math.floor((os.epoch("utc") - lastPlayerUpdate) / 1000)) or nil
-    writeAt(target, width - 17, 1,
-      liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...",
+    writeAt(target, width - 20, 1,
+      (liveAge and ("LIVE " .. tostring(liveAge) .. "s") or "SYNC...") .. " P" .. activeProxy,
       liveAge and liveAge <= 5 and colors.lime or colors.orange, colors.black)
   end
   if width > 30 then
@@ -637,6 +643,12 @@ local pendingRequests = { players=false, teams=false }
 local requestKinds = {}
 local profileRequests = {}
 
+local function rotateProxy(failedProxy)
+  if #proxyUrls > 1 and activeProxy == failedProxy then
+    activeProxy = activeProxy % #proxyUrls + 1
+  end
+end
+
 local function sortTeams()
   if not data or type(data.teams) ~= "table" then return end
   table.sort(data.teams, function(a, b)
@@ -692,6 +704,8 @@ end
 
 local function requestProxy(kind)
   if pendingRequests[kind] then return end
+  local proxyIndex = activeProxy
+  local proxyUrl = proxyUrls[proxyIndex]
   local separator = proxyUrl:find("?", 1, true) and "&" or "?"
   local stamp = tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
   local url = proxyUrl .. separator .. "mode=" .. kind .. "&dashboard=" .. stamp
@@ -703,9 +717,10 @@ local function requestProxy(kind)
   })
   if callOk and ok then
     pendingRequests[kind] = true
-    requestKinds[url] = kind
+    requestKinds[url] = { kind=kind, proxy=proxyIndex }
   else
     lastError = tostring((not callOk and ok) or err or (kind .. " request failed"))
+    rotateProxy(proxyIndex)
   end
 end
 
@@ -770,7 +785,9 @@ local function handleProfileFailure(url, err, response)
 end
 
 local function handleProxySuccess(url, response)
-  local kind = requestKinds[url]
+  local request = requestKinds[url]
+  local kind = type(request) == "table" and request.kind or request
+  local proxyIndex = type(request) == "table" and request.proxy or activeProxy
   requestKinds[url] = nil
   local body = response.readAll()
   response.close()
@@ -779,11 +796,14 @@ local function handleProxySuccess(url, response)
   pendingRequests[kind] = false
   if type(payload) ~= "table" then
     lastError = "Proxy returned invalid JSON"
+    rotateProxy(proxyIndex)
   elseif payload.error then
     lastError = "Proxy: " .. tostring(payload.error)
+    rotateProxy(proxyIndex)
   elseif kind == "teams" then
     if type(payload.teams) ~= "table" then
       lastError = "Proxy has no teams field. Deploy the new proxy code."
+      rotateProxy(proxyIndex)
     else
       data, lastError = payload, nil
       lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
@@ -794,19 +814,25 @@ local function handleProxySuccess(url, response)
     applyPlayers(payload.players)
     lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
     lastError = nil
+  else
+    lastError = "Proxy has no players field"
+    rotateProxy(proxyIndex)
   end
   draw()
 end
 
 local function handleProxyFailure(url, err, response)
-  local kind = requestKinds[url] or
+  local request = requestKinds[url]
+  local kind = (type(request) == "table" and request.kind or request) or
     (tostring(url):find("mode=players", 1, true) and "players") or
     (tostring(url):find("mode=teams", 1, true) and "teams")
+  local proxyIndex = type(request) == "table" and request.proxy or activeProxy
   requestKinds[url] = nil
   if kind then pendingRequests[kind] = false
   else pendingRequests.players, pendingRequests.teams = false, false end
   if response then pcall(response.close) end
   lastError = tostring(err or "HTTP request failed")
+  rotateProxy(proxyIndex)
   draw()
 end
 
