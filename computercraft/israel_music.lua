@@ -1,6 +1,6 @@
 local args = { ... }
 local musicDir = "music"
-local version = "2.1"
+local version = "2.2"
 local bytesPerSecond = 6000
 local chunkSize = 4096
 -- Search/stream protocol used by the public Rc1PCzLH player.
@@ -470,29 +470,12 @@ local function draw()
   writeAt(math.max(2, width - #connection), 4, connection,
     #speakers > 0 and colors.lightBlue or colors.red, colors.black)
 
-  -- Keep the animated star wide and high while the touch UI stays near the player.
-  local starRadiusX = math.max(7, math.min(math.floor(width * 0.42), math.floor(width / 2) - 2))
-  drawAnimatedStar(math.floor(width / 2), 9, starRadiusX, 4)
+  -- Give the animated star most of the upper screen.
+  local starRadiusX = math.max(8, math.min(math.floor(width * 0.45), math.floor(width / 2) - 2))
+  drawAnimatedStar(math.floor(width / 2), 11, starRadiusX, 6)
 
-  local song = activeSong()
-  fill(2, 15, width - 1, 19, colors.gray)
-  writeAt(4, 15, playing and "NOW PLAYING" or "SELECTED", colors.lightBlue, colors.gray)
-  centered(17, scrollingTitle(song and song.title or "SEARCH ON THE COMPUTER", math.max(8, width - 6)),
-    colors.white, colors.gray)
-  if song and song.artist then centered(18, tostring(song.artist):sub(1, width - 6), colors.lightGray, colors.gray) end
-  local progress = song and song.size > 0 and math.min(1, bytesRead / song.size) or 0
-  local barX1, barX2 = 4, width - 3
-  fill(barX1, 19, barX2, 19, colors.black)
-  if progress > 0 then
-    fill(barX1, 19, barX1 + math.floor((barX2 - barX1 + 1) * progress) - 1, 19, colors.lightBlue)
-  end
-  local elapsed = formatTime(bytesRead / bytesPerSecond)
-  local duration = song and song.online and "LIVE" or formatTime(song and song.size / bytesPerSecond or 0)
-  writeAt(4, 20, elapsed, colors.lightGray, colors.black)
-  writeAt(math.max(4, width - #duration - 2), 20, duration, colors.lightGray, colors.black)
-
-  local navigationTop = math.max(24, height - 10)
-  local queueTop, queueBottom = 22, navigationTop - 2
+  local navigationTop = height - 14
+  local queueTop, queueBottom = 19, navigationTop - 2
   writeAt(2, queueTop, "UP NEXT / QUEUE  " .. tostring(#remoteQueue), colors.lightBlue, colors.black)
   addButton("up", width - 18, queueTop - 1, width - 13, queueTop, "UP", colors.blue, colors.white)
   addButton("clearqueue", width - 11, queueTop - 1, width - 7, queueTop, "CLR", colors.gray, colors.white)
@@ -523,17 +506,48 @@ local function draw()
 
   local smallWidth = math.floor((width - 4 - gap * 2) / 3)
   x1, x2 = 2, 2 + smallWidth - 1
-  addButton("stop", x1, height - 6, x2, height - 5, "STOP", colors.red, colors.white)
+  addButton("stop", x1, height - 10, x2, height - 9, "STOP", colors.red, colors.white)
   x1, x2 = x2 + gap + 1, x2 + gap + smallWidth
   local repeatLabel = repeatMode == 0 and "LOOP OFF" or repeatMode == 1 and "LOOP ALL" or "LOOP ONE"
-  addButton("repeat", x1, height - 6, x2, height - 5, repeatLabel, colors.blue, colors.white)
+  addButton("repeat", x1, height - 10, x2, height - 9, repeatLabel, colors.blue, colors.white)
   x1 = x2 + gap + 1
-  addButton("shuffle", x1, height - 6, width - 1, height - 5, shuffle and "SHUFFLE ON" or "SHUFFLE",
+  addButton("shuffle", x1, height - 10, width - 1, height - 9, shuffle and "SHUFFLE ON" or "SHUFFLE",
     shuffle and colors.lightBlue or colors.blue, shuffle and colors.black or colors.white)
 
-  addButton("voldown", 2, height - 2, 7, height - 1, "VOL -", colors.gray, colors.white)
-  centered(height - 2, "VOLUME " .. tostring(math.floor(volume * 100 / 3)) .. "%", colors.white, colors.black)
-  addButton("volup", width - 6, height - 2, width - 1, height - 1, "VOL +", colors.gray, colors.white)
+  addButton("voldown", 2, height - 7, 7, height - 6, "VOL -", colors.gray, colors.white)
+  centered(height - 7, "VOLUME " .. tostring(math.floor(volume * 100 / 3)) .. "%", colors.white, colors.black)
+  addButton("volup", width - 6, height - 7, width - 1, height - 6, "VOL +", colors.gray, colors.white)
+
+  -- The current track lives in a permanent animated footer.
+  local song = activeSong()
+  local nowTop = height - 4
+  local animationPhase = math.floor(os.clock() * 4) % 4
+  local playingColors = { colors.lightBlue, colors.white, colors.lime, colors.white }
+  local playingLabel = playing and ("PLAYING RN" .. string.rep(".", animationPhase)) or "SELECTED"
+  fill(1, nowTop, width, height, colors.gray)
+  writeAt(3, nowTop, playingLabel, playingColors[animationPhase + 1], colors.gray)
+  centered(nowTop + 1,
+    scrollingTitle(song and song.title or "SEARCH ON THE COMPUTER", math.max(8, width - 6)),
+    colors.white, colors.gray)
+  if song and song.artist then
+    centered(nowTop + 2, tostring(song.artist):sub(1, width - 6), colors.lightGray, colors.gray)
+  end
+  local progress = song and song.size > 0 and math.min(1, bytesRead / song.size) or 0
+  local barX1, barX2 = 3, width - 2
+  fill(barX1, nowTop + 3, barX2, nowTop + 3, colors.black)
+  if song and song.online and playing then
+    local barWidth = math.max(1, barX2 - barX1 + 1)
+    local pulseWidth = math.max(3, math.floor(barWidth / 5))
+    local pulseStart = barX1 + (math.floor(os.clock() * 8) % math.max(1, barWidth - pulseWidth + 1))
+    fill(pulseStart, nowTop + 3, pulseStart + pulseWidth - 1, nowTop + 3, colors.lightBlue)
+  elseif progress > 0 then
+    fill(barX1, nowTop + 3,
+      barX1 + math.floor((barX2 - barX1 + 1) * progress) - 1, nowTop + 3, colors.lightBlue)
+  end
+  local elapsed = formatTime(bytesRead / bytesPerSecond)
+  local duration = song and song.online and "LIVE" or formatTime(song and song.size / bytesPerSecond or 0)
+  writeAt(3, height, elapsed, colors.lightGray, colors.gray)
+  writeAt(math.max(3, width - #duration - 1), height, duration, colors.lightGray, colors.gray)
 end
 
 local function runAction(button)
