@@ -1,7 +1,7 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "13"
+local version = "14"
 
 local retiredFiles = {
   "notes.lua", "fieldnav.lua", "hello.lua", "piano.lua", "scanner2.lua",
@@ -22,7 +22,8 @@ local packageManifests = {
   canal = "manifest-canal.txt",
   base = "manifest-base.txt",
   teams = "manifest-teams.txt",
-  music = "manifest-music.txt"
+  music = "manifest-music.txt",
+  games = "manifest-games.txt"
 }
 
 local aliases = {
@@ -39,7 +40,9 @@ local aliases = {
   ranking = "teams",
   radio = "music",
   jukebox = "music",
-  player = "music"
+  player = "music",
+  game = "games",
+  snake = "games"
 }
 
 local cacheBuster = tostring(os.epoch and os.epoch("utc") or os.clock())
@@ -74,6 +77,7 @@ local function printHelp()
   print("  updater radar")
   print("  updater teams")
   print("  updater music")
+  print("  updater games")
   print("  updater all")
   print("  updater comparator_alarm.lua")
 end
