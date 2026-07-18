@@ -1,4 +1,4 @@
-local version = "1.2"
+local version = "1.3"
 local telemetryRate = 0.10
 local displayRate = 0.25
 local hoverSide = "top"
@@ -30,6 +30,7 @@ local hoverTarget = nil
 local hoverTrim = 8
 local hoverLevel = 0
 local hoverDemand = 8
+local lastHoverChange = 0
 local stablePhase = nil
 local phaseCandidate = nil
 local phaseCandidateSince = 0
@@ -223,29 +224,32 @@ local function updateHover(data)
   hoverTarget = hoverTarget or data.y
   local altitudeError = hoverTarget - data.y
 
-  -- Slowly learn the signal which balances this specific airframe.
-  if math.abs(altitudeError) < 5 then
-    hoverTrim = clamp(hoverTrim - data.vy * 0.018 + altitudeError * 0.006,
-      minimumHoverLevel, 13)
-  end
+  -- Learn the sustained lift level without chasing every short movement.
+  local trimChange = clamp(altitudeError * 0.004 - data.vy * 0.006, -0.025, 0.025)
+  hoverTrim = clamp(hoverTrim + trimChange, minimumHoverLevel, 12)
 
   local wanted
-  if math.abs(altitudeError) < 0.6 and math.abs(data.vy) < 0.25 then
+  if math.abs(altitudeError) < 1 and math.abs(data.vy) < 0.4 then
     wanted = hoverTrim
   else
-    wanted = hoverTrim + altitudeError * 0.28 - data.vy * 0.72
+    wanted = hoverTrim + altitudeError * 0.16 - data.vy * 0.45
   end
 
-  -- Full power is reserved for an actual recovery, not normal hover corrections.
-  local recovery = altitudeError > 6 or data.vy < -3
-  wanted = clamp(wanted, minimumHoverLevel, recovery and 15 or 12)
-  hoverDemand = hoverDemand * 0.72 + wanted * 0.28
+  local emergency = altitudeError > 15 or data.vy < -6
+  local recovery = altitudeError > 8 or data.vy < -3.5
+  local maximum = emergency and 15 or (recovery and 13 or 11)
+  wanted = clamp(wanted, minimumHoverLevel, maximum)
+  hoverDemand = hoverDemand * 0.84 + wanted * 0.16
   if hoverLevel == 0 then hoverLevel = math.floor(hoverTrim + 0.5) end
   local wantedLevel = math.floor(hoverDemand + 0.5)
-  if wantedLevel > hoverLevel and hoverDemand > hoverLevel + 0.65 then
+  local now = nowSeconds()
+  local canChange = now - lastHoverChange >= (emergency and 0.10 or 0.22)
+  if canChange and wantedLevel > hoverLevel and hoverDemand > hoverLevel + 0.70 then
     hoverLevel = math.min(wantedLevel, hoverLevel + 1)
-  elseif wantedLevel < hoverLevel and hoverDemand < hoverLevel - 0.65 then
+    lastHoverChange = now
+  elseif canChange and wantedLevel < hoverLevel and hoverDemand < hoverLevel - 0.70 then
     hoverLevel = math.max(wantedLevel, hoverLevel - 1)
+    lastHoverChange = now
   end
   hoverLevel = clamp(hoverLevel, minimumHoverLevel, 15)
   redstone.setAnalogOutput(hoverSide, hoverLevel)
@@ -257,6 +261,7 @@ local function toggleHover()
     hoverTarget = lastTelemetry.y
     hoverLevel = math.floor(hoverTrim + 0.5)
     hoverDemand = hoverTrim
+    lastHoverChange = nowSeconds()
     playChime("hover")
   else
     hoverTarget = nil
@@ -331,13 +336,18 @@ local function drawHorizon(x1, y1, x2, y2, pitch, roll)
   local pitchShift = math.max(-5, math.min(5, pitch / 4))
 
   for y = y1, y2 do
+    local characters, foregrounds, backgrounds = {}, {}, {}
     for x = x1, x2 do
       local horizon = cy + pitchShift + slope * (x - cx)
       local delta = y - horizon
       local background = delta < 0 and colors.lightBlue or colors.brown
       local character = math.abs(delta) < 0.6 and "-" or " "
-      writeAt(x, y, character, colors.white, background)
+      characters[#characters + 1] = character
+      foregrounds[#foregrounds + 1] = colors.toBlit(colors.white)
+      backgrounds[#backgrounds + 1] = colors.toBlit(background)
     end
+    monitor.setCursorPos(x1, y)
+    monitor.blit(table.concat(characters), table.concat(foregrounds), table.concat(backgrounds))
   end
 
   writeAt(cx - 4, cy, "---+---", colors.yellow,
@@ -363,7 +373,7 @@ local function drawFlight(data)
   writeAt(2, 15, string.format("Z %7.0f", data.z), colors.white, colors.black)
   writeAt(2, 17, "HOVER HOLD", colors.gray, colors.black)
   if hoverEnabled then
-    writeAt(2, 18, string.format("Y %.1f  RS %02d", hoverTarget or data.y, hoverLevel),
+    writeAt(2, 18, string.format("ERR %+4.1f RS %02d", (hoverTarget or data.y) - data.y, hoverLevel),
       colors.lime, colors.black)
   else
     writeAt(2, 18, "OFF", colors.red, colors.black)
@@ -387,7 +397,8 @@ local function drawFlight(data)
   local now = os.epoch and os.epoch("utc") / 1000 or os.clock()
   writeAt(right, 15, formatDuration(now - startedAt), colors.lightBlue, colors.black)
   writeAt(right, 17, "LIFT OUTPUT", colors.gray, colors.black)
-  writeAt(right, 18, hoverEnabled and ("TOP / " .. tostring(hoverLevel)) or "TOP / OFF",
+  writeAt(right, 18,
+    hoverEnabled and string.format("T %.1f D %.1f", hoverTrim, hoverDemand) or "TOP / OFF",
     hoverEnabled and colors.lime or colors.red, colors.black)
 
   fill(2, height - 5, width - 1, height - 4, colors.gray)
@@ -423,7 +434,8 @@ local function drawAirframe(data)
 
   fill(2, height - 6, width - 1, height - 4, colors.gray)
   writeAt(3, height - 6,
-    hoverEnabled and string.format("HOVER Y %.1f  REDSTONE %d/15", hoverTarget or data.y, hoverLevel)
+    hoverEnabled and string.format("HOVER ERR %+.2f  TRIM %.2f  DEMAND %.2f  OUT %d/15",
+      (hoverTarget or data.y) - data.y, hoverTrim, hoverDemand, hoverLevel)
       or "HOVER CONTROL OFF",
     hoverEnabled and colors.lime or colors.lightGray, colors.gray)
   center(2, width - 1, height - 5,
