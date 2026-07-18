@@ -1,22 +1,27 @@
-local version = "1.3"
+local version = "1.4"
 local telemetryRate = 0.10
 local displayRate = 0.25
 local hoverSide = "top"
 local phaseHoldSeconds = 1.5
 local minimumHoverLevel = 6
 
-local monitor = peripheral.find("monitor")
-if not monitor then error("Connect an Advanced Monitor first.", 0) end
-monitor.setTextScale(0.5)
+local physicalMonitor = peripheral.find("monitor")
+if not physicalMonitor then error("Connect an Advanced Monitor first.", 0) end
+physicalMonitor.setTextScale(0.5)
+local monitorName = peripheral.getName(physicalMonitor)
 
-local width, height = monitor.getSize()
+local width, height = physicalMonitor.getSize()
 if width < 38 or height < 24 then
   error("Airliner Display needs a larger Advanced Monitor.", 0)
 end
 
-pcall(monitor.setPaletteColor, colors.blue, 0.02, 0.18, 0.55)
-pcall(monitor.setPaletteColor, colors.lightBlue, 0.20, 0.62, 1.00)
-pcall(monitor.setPaletteColor, colors.brown, 0.34, 0.17, 0.05)
+pcall(physicalMonitor.setPaletteColor, colors.blue, 0.02, 0.18, 0.55)
+pcall(physicalMonitor.setPaletteColor, colors.lightBlue, 0.20, 0.62, 1.00)
+pcall(physicalMonitor.setPaletteColor, colors.brown, 0.34, 0.17, 0.05)
+
+-- Draw into an invisible local buffer. Showing it transfers the completed frame
+-- at once instead of blocking the event loop with hundreds of monitor calls.
+local monitor = window.create(physicalMonitor, 1, 1, width, height, false)
 
 local page = "flight"
 local buttons = {}
@@ -35,6 +40,16 @@ local stablePhase = nil
 local phaseCandidate = nil
 local phaseCandidateSince = 0
 local lastChimeAt = 0
+local lastGridCheck = 0
+local isInPlotGrid = false
+local lastEnvironmentUpdate = 0
+local lastAirframeUpdate = 0
+local cachedPressure = nil
+local cachedGravity = nil
+local cachedName = "UNNAMED AIRCRAFT"
+local cachedUuid = "UNKNOWN"
+local cachedMass = 0
+local cachedCenterOfMass = nil
 
 redstone.setAnalogOutput(hoverSide, 0)
 
@@ -65,6 +80,10 @@ local function degrees(value)
   return value
 end
 
+local function nowSeconds()
+  return os.epoch and os.epoch("utc") / 1000 or os.clock()
+end
+
 local function orientationAngles(orientation)
   if type(orientation) ~= "table" or type(orientation.toEuler) ~= "function" then
     return 0, 0, 0
@@ -91,8 +110,12 @@ local function collectTelemetry()
   if type(sublevel) ~= "table" or type(sublevel.isInPlotGrid) ~= "function" then
     return nil, "CC:SABLE API NOT FOUND"
   end
-  local inSublevel = safeCall(sublevel, "isInPlotGrid")
-  if not inSublevel then return nil, "COMPUTER IS NOT ON A SABLE OBJECT" end
+  local now = nowSeconds()
+  if now - lastGridCheck >= 1 or lastGridCheck == 0 then
+    isInPlotGrid = safeCall(sublevel, "isInPlotGrid") and true or false
+    lastGridCheck = now
+  end
+  if not isInPlotGrid then return nil, "COMPUTER IS NOT ON A SABLE OBJECT" end
 
   local pose = safeCall(sublevel, "getLogicalPose")
   if type(pose) ~= "table" then return nil, "NO SABLE POSE DATA" end
@@ -110,13 +133,24 @@ local function collectTelemetry()
   local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
   local groundSpeed = math.sqrt(vx * vx + vz * vz)
   local track = trackFromVelocity(vx, vz)
-  local pressure = safeCall(aeroApi, "getAirPressure", position)
-  local gravity = safeCall(aeroApi, "getGravity")
-  local centerOfMass = safeCall(sublevel, "getCenterOfMass")
+  if now - lastEnvironmentUpdate >= 1 or lastEnvironmentUpdate == 0 then
+    local pressure = safeCall(aeroApi, "getAirPressure", position)
+    local gravity = safeCall(aeroApi, "getGravity")
+    if pressure ~= nil then cachedPressure = pressure end
+    if gravity ~= nil then cachedGravity = gravity end
+    lastEnvironmentUpdate = now
+  end
+  if now - lastAirframeUpdate >= 5 or lastAirframeUpdate == 0 then
+    cachedName = tostring(safeCall(sublevel, "getName") or cachedName)
+    cachedUuid = tostring(safeCall(sublevel, "getUniqueId") or cachedUuid)
+    cachedMass = tonumber(safeCall(sublevel, "getMass")) or cachedMass
+    cachedCenterOfMass = safeCall(sublevel, "getCenterOfMass") or cachedCenterOfMass
+    lastAirframeUpdate = now
+  end
 
   return {
-    name = tostring(safeCall(sublevel, "getName") or "UNNAMED AIRCRAFT"),
-    uuid = tostring(safeCall(sublevel, "getUniqueId") or "UNKNOWN"),
+    name = cachedName,
+    uuid = cachedUuid,
     position = position,
     x = px, y = py, z = pz,
     velocity = velocity,
@@ -127,11 +161,11 @@ local function collectTelemetry()
     pitch = pitch, yaw = yaw, roll = roll,
     angular = angular,
     angularSpeed = math.sqrt(ax * ax + ay * ay + az * az),
-    mass = tonumber(safeCall(sublevel, "getMass")) or 0,
-    pressure = tonumber(pressure),
-    gravity = gravity,
-    gravityStrength = magnitude(gravity),
-    centerOfMass = centerOfMass
+    mass = cachedMass,
+    pressure = tonumber(cachedPressure),
+    gravity = cachedGravity,
+    gravityStrength = magnitude(cachedGravity),
+    centerOfMass = cachedCenterOfMass
   }
 end
 
@@ -152,10 +186,6 @@ local function cabinStatus(phase)
     return "FASTEN SEATBELTS", colors.orange
   end
   return "CABIN STATUS: NORMAL", colors.lime
-end
-
-local function nowSeconds()
-  return os.epoch and os.epoch("utc") / 1000 or os.clock()
 end
 
 local function playChime(kind)
@@ -455,7 +485,7 @@ local function drawFooter()
 end
 
 local function draw(data, errorText)
-  width, height = monitor.getSize()
+  monitor.setVisible(false)
   buttons = {}
   monitor.setBackgroundColor(colors.black)
   monitor.setTextColor(colors.white)
@@ -469,6 +499,7 @@ local function draw(data, errorText)
       "PLACE THIS COMPUTER ON THE AIRCRAFT", colors.white, colors.black)
   end
   drawFooter()
+  monitor.setVisible(true)
 end
 
 term.setBackgroundColor(colors.black)
@@ -503,7 +534,7 @@ local function main()
     elseif event == "timer" and a == displayTimer then
       draw(telemetry or lastTelemetry, telemetryError)
       displayTimer = os.startTimer(displayRate)
-    elseif event == "monitor_touch" and a == peripheral.getName(monitor) then
+    elseif event == "monitor_touch" and a == monitorName then
       for index = #buttons, 1, -1 do
         local button = buttons[index]
         if b >= button.x1 and b <= button.x2 and c >= button.y1 and c <= button.y2 then
@@ -521,8 +552,8 @@ end
 local ok, failure = pcall(main)
 hoverEnabled = false
 redstone.setAnalogOutput(hoverSide, 0)
-monitor.setBackgroundColor(colors.black)
-monitor.setTextColor(colors.white)
-monitor.clear()
-monitor.setCursorPos(1, 1)
+physicalMonitor.setBackgroundColor(colors.black)
+physicalMonitor.setTextColor(colors.white)
+physicalMonitor.clear()
+physicalMonitor.setCursorPos(1, 1)
 if not ok and tostring(failure) ~= "Terminated" then error(failure, 0) end
