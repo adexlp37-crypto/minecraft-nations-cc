@@ -1,12 +1,14 @@
-local version = "1.0"
+local version = "1.1"
 local refreshRate = 0.25
+local hoverSide = "top"
+local phaseHoldSeconds = 1.5
 
 local monitor = peripheral.find("monitor")
 if not monitor then error("Connect an Advanced Monitor first.", 0) end
 monitor.setTextScale(0.5)
 
 local width, height = monitor.getSize()
-if width < 38 or height < 20 then
+if width < 38 or height < 24 then
   error("Airliner Display needs a larger Advanced Monitor.", 0)
 end
 
@@ -20,6 +22,17 @@ local startedAt = os.epoch and os.epoch("utc") / 1000 or os.clock()
 local lastTrack = 0
 local lastTelemetry = nil
 local aeroApi = type(aero) == "table" and aero or aerodynamics
+local speaker = peripheral.find("speaker")
+local hoverEnabled = false
+local hoverTarget = nil
+local hoverTrim = 8
+local hoverLevel = 0
+local stablePhase = nil
+local phaseCandidate = nil
+local phaseCandidateSince = 0
+local lastChimeAt = 0
+
+redstone.setAnalogOutput(hoverSide, 0)
 
 local function safeCall(api, method, ...)
   if type(api) ~= "table" or type(api[method]) ~= "function" then return nil end
@@ -129,13 +142,114 @@ local function flightPhase(data)
   return "CRUISING", colors.lightBlue
 end
 
-local function cabinStatus(data)
-  local phase = flightPhase(data)
+local function cabinStatus(phase)
   if phase == "PARKED" then return "WELCOME ABOARD", colors.lime end
   if phase == "CLIMBING" or phase == "DESCENDING" or phase == "MANEUVERING" then
     return "FASTEN SEATBELTS", colors.orange
   end
   return "CABIN STATUS: NORMAL", colors.lime
+end
+
+local function nowSeconds()
+  return os.epoch and os.epoch("utc") / 1000 or os.clock()
+end
+
+local function playChime(kind)
+  if not speaker then return end
+  local now = nowSeconds()
+  if now - lastChimeAt < 2 then return end
+  lastChimeAt = now
+  if kind == "fasten" then
+    pcall(speaker.playNote, "bell", 0.8, 8)
+  elseif kind == "release" then
+    pcall(speaker.playNote, "chime", 0.8, 18)
+  elseif kind == "hover" then
+    pcall(speaker.playNote, "pling", 0.7, 14)
+  else
+    pcall(speaker.playNote, "chime", 0.55, 13)
+  end
+end
+
+local function updateFlightState(data)
+  local rawPhase, rawColor = flightPhase(data)
+  local now = nowSeconds()
+  if not stablePhase then
+    stablePhase = rawPhase
+    phaseCandidate = rawPhase
+    phaseCandidateSince = now
+  elseif rawPhase == stablePhase then
+    phaseCandidate = rawPhase
+    phaseCandidateSince = now
+  elseif rawPhase ~= phaseCandidate then
+    phaseCandidate = rawPhase
+    phaseCandidateSince = now
+  elseif now - phaseCandidateSince >= phaseHoldSeconds then
+    local oldCabin = cabinStatus(stablePhase)
+    local newCabin = cabinStatus(rawPhase)
+    stablePhase = rawPhase
+    if newCabin ~= oldCabin then
+      playChime(newCabin == "FASTEN SEATBELTS" and "fasten" or "release")
+    else
+      playChime("phase")
+    end
+  end
+
+  data.phase = stablePhase
+  local _, stableColor = flightPhase(data)
+  if stablePhase ~= rawPhase then
+    local phaseColors = {
+      PARKED=colors.lightGray, CLIMBING=colors.lime, DESCENDING=colors.orange,
+      ["LOW SPEED"]=colors.yellow, MANEUVERING=colors.red, CRUISING=colors.lightBlue
+    }
+    stableColor = phaseColors[stablePhase] or rawColor
+  end
+  data.phaseColor = stableColor
+  data.cabin, data.cabinColor = cabinStatus(stablePhase)
+end
+
+local function clamp(value, minimum, maximum)
+  return math.max(minimum, math.min(maximum, value))
+end
+
+local function updateHover(data)
+  if not hoverEnabled or not data then
+    hoverLevel = 0
+    redstone.setAnalogOutput(hoverSide, 0)
+    return
+  end
+  hoverTarget = hoverTarget or data.y
+  local altitudeError = hoverTarget - data.y
+
+  -- Slowly learn the signal which balances this specific airframe.
+  if math.abs(altitudeError) < 4 then
+    hoverTrim = clamp(hoverTrim - data.vy * 0.04 + altitudeError * 0.01, 1, 15)
+  end
+
+  local wanted = hoverTrim + altitudeError * 0.65 - data.vy * 1.8
+  wanted = math.floor(clamp(wanted, 0, 15) + 0.5)
+  if hoverLevel == 0 then hoverLevel = math.floor(hoverTrim + 0.5) end
+  local maxStep = (math.abs(altitudeError) > 5 or math.abs(data.vy) > 2) and 2 or 1
+  if wanted > hoverLevel then
+    hoverLevel = math.min(wanted, hoverLevel + maxStep)
+  elseif wanted < hoverLevel then
+    hoverLevel = math.max(wanted, hoverLevel - maxStep)
+  end
+  hoverLevel = clamp(hoverLevel, 0, 15)
+  redstone.setAnalogOutput(hoverSide, hoverLevel)
+end
+
+local function toggleHover()
+  hoverEnabled = not hoverEnabled
+  if hoverEnabled and lastTelemetry then
+    hoverTarget = lastTelemetry.y
+    hoverLevel = math.floor(hoverTrim + 0.5)
+    playChime("hover")
+  else
+    hoverTarget = nil
+    hoverLevel = 0
+    redstone.setAnalogOutput(hoverSide, 0)
+    playChime("hover")
+  end
 end
 
 local function formatDuration(seconds)
@@ -219,8 +333,10 @@ local function drawHorizon(x1, y1, x2, y2, pitch, roll)
 end
 
 local function drawFlight(data)
-  local phase, phaseColor = flightPhase(data)
-  local cabin, cabinColor = cabinStatus(data)
+  local phase = data.phase or flightPhase(data)
+  local phaseColor = data.phaseColor or colors.white
+  local cabin = data.cabin or "CABIN STATUS: NORMAL"
+  local cabinColor = data.cabinColor or colors.lime
   writeAt(2, 4, "FLIGHT PHASE", colors.gray, colors.black)
   writeAt(2, 5, phase, phaseColor, colors.black)
   writeAt(2, 7, "ALTITUDE", colors.gray, colors.black)
@@ -231,6 +347,13 @@ local function drawFlight(data)
   writeAt(2, 13, "POSITION", colors.gray, colors.black)
   writeAt(2, 14, string.format("X %7.0f", data.x), colors.white, colors.black)
   writeAt(2, 15, string.format("Z %7.0f", data.z), colors.white, colors.black)
+  writeAt(2, 17, "HOVER HOLD", colors.gray, colors.black)
+  if hoverEnabled then
+    writeAt(2, 18, string.format("Y %.1f  RS %02d", hoverTarget or data.y, hoverLevel),
+      colors.lime, colors.black)
+  else
+    writeAt(2, 18, "OFF", colors.red, colors.black)
+  end
 
   local horizonX1 = math.max(15, math.floor(width * 0.26))
   local horizonX2 = math.min(width - 15, math.floor(width * 0.74))
@@ -249,6 +372,9 @@ local function drawFlight(data)
   writeAt(right, 14, "FLIGHT TIME", colors.gray, colors.black)
   local now = os.epoch and os.epoch("utc") / 1000 or os.clock()
   writeAt(right, 15, formatDuration(now - startedAt), colors.lightBlue, colors.black)
+  writeAt(right, 17, "LIFT OUTPUT", colors.gray, colors.black)
+  writeAt(right, 18, hoverEnabled and ("TOP / " .. tostring(hoverLevel)) or "TOP / OFF",
+    hoverEnabled and colors.lime or colors.red, colors.black)
 
   fill(2, height - 5, width - 1, height - 4, colors.gray)
   center(2, width - 1, height - 5, cabin, cabinColor, colors.gray)
@@ -282,16 +408,24 @@ local function drawAirframe(data)
   writeAt(right, y + 10, string.format("%.3f", data.gravityStrength), colors.white, colors.black)
 
   fill(2, height - 6, width - 1, height - 4, colors.gray)
+  writeAt(3, height - 6,
+    hoverEnabled and string.format("HOVER Y %.1f  REDSTONE %d/15", hoverTarget or data.y, hoverLevel)
+      or "HOVER CONTROL OFF",
+    hoverEnabled and colors.lime or colors.lightGray, colors.gray)
   center(2, width - 1, height - 5,
     string.format("POSE  P %+05.1f   Y %+05.1f   R %+05.1f", data.pitch, data.yaw, data.roll),
     colors.lightBlue, colors.gray)
 end
 
 local function drawFooter()
-  addButton("flight", 2, height - 2, math.floor(width / 2) - 1, height,
+  local first = math.floor(width / 3)
+  local second = math.floor(width * 2 / 3)
+  addButton("flight", 2, height - 2, first - 1, height,
     "FLIGHT INFO", page == "flight")
-  addButton("airframe", math.floor(width / 2) + 1, height - 2, width - 1, height,
+  addButton("airframe", first + 1, height - 2, second - 1, height,
     "AIRFRAME DATA", page == "airframe")
+  addButton("hover", second + 1, height - 2, width - 1, height,
+    hoverEnabled and ("HOVER ON " .. tostring(hoverLevel)) or "HOVER OFF", hoverEnabled)
 end
 
 local function draw(data, errorText)
@@ -322,21 +456,29 @@ print("Hold Ctrl+T to stop.")
 
 local function main()
   local telemetry, telemetryError = collectTelemetry()
-  if telemetry then lastTelemetry = telemetry end
+  if telemetry then
+    updateFlightState(telemetry)
+    lastTelemetry = telemetry
+  end
+  updateHover(telemetry)
   draw(telemetry or lastTelemetry, telemetryError)
   local timer = os.startTimer(refreshRate)
   while true do
     local event, a, b, c = os.pullEvent()
     if event == "timer" and a == timer then
       telemetry, telemetryError = collectTelemetry()
-      if telemetry then lastTelemetry = telemetry end
+      if telemetry then
+        updateFlightState(telemetry)
+        lastTelemetry = telemetry
+      end
+      updateHover(telemetry)
       draw(telemetry or lastTelemetry, telemetryError)
       timer = os.startTimer(refreshRate)
     elseif event == "monitor_touch" and a == peripheral.getName(monitor) then
       for index = #buttons, 1, -1 do
         local button = buttons[index]
         if b >= button.x1 and b <= button.x2 and c >= button.y1 and c <= button.y2 then
-          page = button.action
+          if button.action == "hover" then toggleHover() else page = button.action end
           draw(lastTelemetry, telemetryError)
           break
         end
@@ -348,6 +490,8 @@ local function main()
 end
 
 local ok, failure = pcall(main)
+hoverEnabled = false
+redstone.setAnalogOutput(hoverSide, 0)
 monitor.setBackgroundColor(colors.black)
 monitor.setTextColor(colors.white)
 monitor.clear()
