@@ -1,27 +1,22 @@
-local version = "1.4"
-local telemetryRate = 0.10
-local displayRate = 0.25
+local version = "1.5"
+local refreshRate = 0.25
 local hoverSide = "top"
 local phaseHoldSeconds = 1.5
 local minimumHoverLevel = 6
 
-local physicalMonitor = peripheral.find("monitor")
-if not physicalMonitor then error("Connect an Advanced Monitor first.", 0) end
-physicalMonitor.setTextScale(0.5)
-local monitorName = peripheral.getName(physicalMonitor)
+local monitor = peripheral.find("monitor")
+if not monitor then error("Connect an Advanced Monitor first.", 0) end
+monitor.setTextScale(0.5)
+local monitorName = peripheral.getName(monitor)
 
-local width, height = physicalMonitor.getSize()
+local width, height = monitor.getSize()
 if width < 38 or height < 24 then
   error("Airliner Display needs a larger Advanced Monitor.", 0)
 end
 
-pcall(physicalMonitor.setPaletteColor, colors.blue, 0.02, 0.18, 0.55)
-pcall(physicalMonitor.setPaletteColor, colors.lightBlue, 0.20, 0.62, 1.00)
-pcall(physicalMonitor.setPaletteColor, colors.brown, 0.34, 0.17, 0.05)
-
--- Draw into an invisible local buffer. Showing it transfers the completed frame
--- at once instead of blocking the event loop with hundreds of monitor calls.
-local monitor = window.create(physicalMonitor, 1, 1, width, height, false)
+pcall(monitor.setPaletteColor, colors.blue, 0.02, 0.18, 0.55)
+pcall(monitor.setPaletteColor, colors.lightBlue, 0.20, 0.62, 1.00)
+pcall(monitor.setPaletteColor, colors.brown, 0.34, 0.17, 0.05)
 
 local page = "flight"
 local buttons = {}
@@ -485,7 +480,7 @@ local function drawFooter()
 end
 
 local function draw(data, errorText)
-  monitor.setVisible(false)
+  width, height = monitor.getSize()
   buttons = {}
   monitor.setBackgroundColor(colors.black)
   monitor.setTextColor(colors.white)
@@ -499,7 +494,6 @@ local function draw(data, errorText)
       "PLACE THIS COMPUTER ON THE AIRCRAFT", colors.white, colors.black)
   end
   drawFooter()
-  monitor.setVisible(true)
 end
 
 term.setBackgroundColor(colors.black)
@@ -519,21 +513,18 @@ local function main()
   end
   updateHover(telemetry)
   draw(telemetry or lastTelemetry, telemetryError)
-  local telemetryTimer = os.startTimer(telemetryRate)
-  local displayTimer = os.startTimer(displayRate)
+  local timer = os.startTimer(refreshRate)
   while true do
     local event, a, b, c = os.pullEvent()
-    if event == "timer" and a == telemetryTimer then
+    if event == "timer" and a == timer then
       telemetry, telemetryError = collectTelemetry()
       if telemetry then
         updateFlightState(telemetry)
         lastTelemetry = telemetry
       end
       updateHover(telemetry)
-      telemetryTimer = os.startTimer(telemetryRate)
-    elseif event == "timer" and a == displayTimer then
       draw(telemetry or lastTelemetry, telemetryError)
-      displayTimer = os.startTimer(displayRate)
+      timer = os.startTimer(refreshRate)
     elseif event == "monitor_touch" and a == monitorName then
       for index = #buttons, 1, -1 do
         local button = buttons[index]
@@ -552,8 +543,8 @@ end
 local ok, failure = pcall(main)
 hoverEnabled = false
 redstone.setAnalogOutput(hoverSide, 0)
-physicalMonitor.setBackgroundColor(colors.black)
-physicalMonitor.setTextColor(colors.white)
-physicalMonitor.clear()
-physicalMonitor.setCursorPos(1, 1)
+monitor.setBackgroundColor(colors.black)
+monitor.setTextColor(colors.white)
+monitor.clear()
+monitor.setCursorPos(1, 1)
 if not ok and tostring(failure) ~= "Terminated" then error(failure, 0) end
