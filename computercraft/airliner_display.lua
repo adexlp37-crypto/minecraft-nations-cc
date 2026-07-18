@@ -1,7 +1,9 @@
-local version = "1.1"
-local refreshRate = 0.25
+local version = "1.2"
+local telemetryRate = 0.10
+local displayRate = 0.25
 local hoverSide = "top"
 local phaseHoldSeconds = 1.5
+local minimumHoverLevel = 6
 
 local monitor = peripheral.find("monitor")
 if not monitor then error("Connect an Advanced Monitor first.", 0) end
@@ -27,6 +29,7 @@ local hoverEnabled = false
 local hoverTarget = nil
 local hoverTrim = 8
 local hoverLevel = 0
+local hoverDemand = 8
 local stablePhase = nil
 local phaseCandidate = nil
 local phaseCandidateSince = 0
@@ -221,20 +224,30 @@ local function updateHover(data)
   local altitudeError = hoverTarget - data.y
 
   -- Slowly learn the signal which balances this specific airframe.
-  if math.abs(altitudeError) < 4 then
-    hoverTrim = clamp(hoverTrim - data.vy * 0.04 + altitudeError * 0.01, 1, 15)
+  if math.abs(altitudeError) < 5 then
+    hoverTrim = clamp(hoverTrim - data.vy * 0.018 + altitudeError * 0.006,
+      minimumHoverLevel, 13)
   end
 
-  local wanted = hoverTrim + altitudeError * 0.65 - data.vy * 1.8
-  wanted = math.floor(clamp(wanted, 0, 15) + 0.5)
-  if hoverLevel == 0 then hoverLevel = math.floor(hoverTrim + 0.5) end
-  local maxStep = (math.abs(altitudeError) > 5 or math.abs(data.vy) > 2) and 2 or 1
-  if wanted > hoverLevel then
-    hoverLevel = math.min(wanted, hoverLevel + maxStep)
-  elseif wanted < hoverLevel then
-    hoverLevel = math.max(wanted, hoverLevel - maxStep)
+  local wanted
+  if math.abs(altitudeError) < 0.6 and math.abs(data.vy) < 0.25 then
+    wanted = hoverTrim
+  else
+    wanted = hoverTrim + altitudeError * 0.28 - data.vy * 0.72
   end
-  hoverLevel = clamp(hoverLevel, 0, 15)
+
+  -- Full power is reserved for an actual recovery, not normal hover corrections.
+  local recovery = altitudeError > 6 or data.vy < -3
+  wanted = clamp(wanted, minimumHoverLevel, recovery and 15 or 12)
+  hoverDemand = hoverDemand * 0.72 + wanted * 0.28
+  if hoverLevel == 0 then hoverLevel = math.floor(hoverTrim + 0.5) end
+  local wantedLevel = math.floor(hoverDemand + 0.5)
+  if wantedLevel > hoverLevel and hoverDemand > hoverLevel + 0.65 then
+    hoverLevel = math.min(wantedLevel, hoverLevel + 1)
+  elseif wantedLevel < hoverLevel and hoverDemand < hoverLevel - 0.65 then
+    hoverLevel = math.max(wantedLevel, hoverLevel - 1)
+  end
+  hoverLevel = clamp(hoverLevel, minimumHoverLevel, 15)
   redstone.setAnalogOutput(hoverSide, hoverLevel)
 end
 
@@ -243,6 +256,7 @@ local function toggleHover()
   if hoverEnabled and lastTelemetry then
     hoverTarget = lastTelemetry.y
     hoverLevel = math.floor(hoverTrim + 0.5)
+    hoverDemand = hoverTrim
     playChime("hover")
   else
     hoverTarget = nil
@@ -462,18 +476,21 @@ local function main()
   end
   updateHover(telemetry)
   draw(telemetry or lastTelemetry, telemetryError)
-  local timer = os.startTimer(refreshRate)
+  local telemetryTimer = os.startTimer(telemetryRate)
+  local displayTimer = os.startTimer(displayRate)
   while true do
     local event, a, b, c = os.pullEvent()
-    if event == "timer" and a == timer then
+    if event == "timer" and a == telemetryTimer then
       telemetry, telemetryError = collectTelemetry()
       if telemetry then
         updateFlightState(telemetry)
         lastTelemetry = telemetry
       end
       updateHover(telemetry)
+      telemetryTimer = os.startTimer(telemetryRate)
+    elseif event == "timer" and a == displayTimer then
       draw(telemetry or lastTelemetry, telemetryError)
-      timer = os.startTimer(refreshRate)
+      displayTimer = os.startTimer(displayRate)
     elseif event == "monitor_touch" and a == peripheral.getName(monitor) then
       for index = #buttons, 1, -1 do
         local button = buttons[index]
