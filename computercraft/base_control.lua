@@ -1,6 +1,6 @@
 local configFile = ".base_control.cfg"
 local liveCacheFile = ".base_control_live.json"
-local version = "3"
+local version = "4"
 
 local defaultProxies = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
@@ -12,7 +12,7 @@ local validSides = { top=true, bottom=true, left=true, right=true, front=true, b
 
 local function defaultConfig()
   return {
-    configVersion = 3,
+    configVersion = 4,
     webhookUrl = "",
     roleIds = {
       ally="1525923176196866048",
@@ -32,8 +32,8 @@ local function defaultConfig()
     emergencyOpenSide = "",
     refreshSeconds = 6,
     home = { minX=7110, maxX=7156, minY=50, maxY=120, minZ=-6459, maxZ=-6395 },
-    outer = { minX=6800, maxX=7500, minY=50, maxY=120, minZ=-7000, maxZ=-6000 },
-    inner = { minX=7056, maxX=7156, minY=50, maxY=120, minZ=-6440, maxZ=-6395 },
+    outer = { minX=6800, maxX=7500, minY=50, maxY=2000, minZ=-7000, maxZ=-6000 },
+    inner = { minX=7056, maxX=7156, minY=50, maxY=2000, minZ=-6440, maxZ=-6395 },
     proxies = defaultProxies
   }
 end
@@ -81,6 +81,15 @@ local function loadConfig()
     if unset(config.outer) then config.outer = defaults.outer end
     if unset(config.inner) then config.inner = defaults.inner end
     config.configVersion = 3
+    saveConfig(config)
+  end
+  if tonumber(config.configVersion) < 4 then
+    local defaults = defaultConfig()
+    config.outer = type(config.outer) == "table" and config.outer or defaults.outer
+    config.inner = type(config.inner) == "table" and config.inner or defaults.inner
+    config.outer.maxY = 2000
+    config.inner.maxY = 2000
+    config.configVersion = 4
     saveConfig(config)
   end
   config.proxies = type(config.proxies) == "table" and config.proxies or defaultProxies
