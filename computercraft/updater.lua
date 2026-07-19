@@ -1,10 +1,10 @@
 local owner = "adexlp37-crypto"
 local repository = "minecraft-nations-cc"
 local branch = "main"
-local version = "14"
+local version = "15"
 
 local retiredFiles = {
-  "notes.lua", "fieldnav.lua", "hello.lua", "piano.lua", "scanner2.lua",
+  "notes.lua", "fieldnav.lua", "hello.lua", "scanner2.lua",
   "fluid_display.lua", "door_controller.lua", "radar_interface.lua",
   "player_scanner.lua", "fluid_sender.lua", "fluid_tank_monitor.lua",
   "music_stream.lua", "task_manager.lua", "create_stress_monitor.lua",
@@ -23,6 +23,7 @@ local packageManifests = {
   base = "manifest-base.txt",
   teams = "manifest-teams.txt",
   music = "manifest-music.txt",
+  piano = "manifest-piano.txt",
   games = "manifest-games.txt"
 }
 
@@ -38,6 +39,7 @@ local aliases = {
   workshop = "base",
   nations = "teams",
   ranking = "teams",
+  keyboard = "piano",
   radio = "music",
   jukebox = "music",
   player = "music",
