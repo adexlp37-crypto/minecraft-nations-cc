@@ -8,7 +8,8 @@ if not monitor.isColor() then error("This planner needs an Advanced Monitor.", 0
 monitor.setTextScale(1)
 local oldTerm = term.redirect(monitor)
 local C = colors
-local SAVE_FILE = ".city_planner_data"
+local SAVE_FILE = ".city_planner_canvas_v3"
+local baseMap = paintutils.loadImage("city_base_map.nfp")
 
 local categories = {
   { "BORD", C.red }, { "PWR", C.blue }, { "ADMIN", C.yellow },
@@ -31,16 +32,14 @@ local function writeAt(x, y, value, foreground, background)
 end
 
 local function terrain(x, y, w)
-  if x <= math.floor(w * 0.27) then return C.blue end
-  if x >= math.floor(w * 0.86) then return C.gray end
-  return C.yellow
+  return 0 -- transparent editing layer: the base map remains visible.
 end
 
 local function makeGrid(w, h)
   local result = {}
   for y = 1, h do
     result[y] = {}
-    for x = 1, w do result[y][x] = terrain(x, y, w) end
+    for x = 1, w do result[y][x] = 0 end
   end
   return result
 end
@@ -69,25 +68,6 @@ end
 
 local function seedPlan()
   grid = makeGrid(canvasW, canvasH)
-  -- A clean, editable starting version of the supplied rough sketch.
-  outline(6,2,canvasW-4,5,C.green)       -- military base
-  outline(5,7,10,10,C.yellow)            -- north administration
-  outline(10,12,15,15,C.blue)            -- power plant
-  outline(14,16,20,19,C.yellow)          -- administration
-  outline(6,18,13,22,C.lightBlue)        -- parking
-  outline(12,18,22,canvasH-4,C.lightGray)-- housing
-  outline(5,canvasH-7,10,canvasH-4,C.blue)
-  outline(15,canvasH-8,21,canvasH-6,C.magenta)
-  outline(15,canvasH-5,21,canvasH-3,C.purple)
-  outline(16,canvasH-2,22,canvasH,C.lime)
-  paintLine(11,6,11,canvasH,C.black)
-  paintLine(11,16,canvasW-5,16,C.black)
-  paintLine(11,22,canvasW-6,22,C.black)
-  paintLine(4,canvasH,3,canvasH-5,C.red)
-  paintLine(3,canvasH-5,6,canvasH-10,C.red)
-  paintLine(6,canvasH-10,7,7,C.red)
-  paintLine(7,7,canvasW-5,6,C.red)
-  paintLine(canvasW-5,6,canvasW-3,canvasH-3,C.red)
 end
 
 local function copyGrid()
@@ -159,11 +139,13 @@ local function draw()
   monitor.write(" CITY PLANNER")
   writeAt(1,2,"EDIT MODE  |  " .. (tool == "box" and "BOX: choose 2 corners" or tool:upper()),C.lightGray,C.black)
 
-  -- The map deliberately uses whole monitor cells: no tiny anti-aliased text,
-  -- and every visible cell is directly editable.
+  -- The supplied world map is the fixed base layer. The planning layer starts
+  -- completely transparent, so every coloured cell belongs to the team.
   for y = 1, canvasH do
     for x = 1, canvasW do
-      paintutils.drawPixel(x, mapY1+y-1, grid[y][x] or terrain(x,y,canvasW))
+      local base = (baseMap[y] and baseMap[y][x]) or C.black
+      local overlay = grid[y] and grid[y][x]
+      paintutils.drawPixel(x, mapY1+y-1, overlay and overlay ~= 0 and overlay or base)
     end
   end
 
@@ -216,8 +198,8 @@ local function editCell(x, y)
     end
   else
     remember()
-    grid[y][x] = tool == "erase" and terrain(x,y,canvasW) or selectedColor
-    notice = tool == "erase" and "Terrain restored." or "Cell painted."
+    grid[y][x] = tool == "erase" and 0 or selectedColor
+    notice = tool == "erase" and "Base map restored." or "Cell painted."
   end
 end
 
