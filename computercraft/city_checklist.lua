@@ -47,21 +47,22 @@ local function btn(x,y,x2,label,col,fn) monitor.setCursorPos(x,y); monitor.setBa
 local function sc(s) return s=="DONE" and C.lime or s=="BUILD" and C.yellow or C.red end
 local function draw()
  local w,h=monitor.getSize(); hits={}; monitor.setBackgroundColor(C.black); monitor.clear(); monitor.setBackgroundColor(C.gray); monitor.setCursorPos(1,1); monitor.setTextColor(C.white); monitor.write(" CITY BUILD BOARD")
- btn(1,2,11,"PROJECTS",tab=="projects" and C.lightBlue or C.gray,function() tab="projects";page=1 end)
- btn(13,2,20,"TEAM",tab=="team" and C.lightBlue or C.gray,function() tab="team";page=1 end)
- at(22,2,"Active: "..cut(active or "none",w-29),C.yellow,C.black)
+ -- Leave a clear header area: tabs are deliberately lower for easy tapping.
+ btn(1,4,11,"PROJECTS",tab=="projects" and C.lightBlue or C.gray,function() tab="projects";page=1 end)
+ btn(13,4,20,"TEAM",tab=="team" and C.lightBlue or C.gray,function() tab="team";page=1 end)
+ at(22,4,"Active: "..cut(active or "none",w-29),C.yellow,C.black)
  if tab=="projects" then
-  local per=h-8; local first=(page-1)*per+1; local last=math.min(#data.projects,first+per-1)
-  for i=first,last do local p=data.projects[i]; local y=3+i-first; local bg=selected==i and C.lightGray or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(1,y,p.status,sc(p.status),bg); at(7,y,cut(p.name,w-19),bg==C.lightGray and C.black or C.white,bg); at(w-10,y,cut(p.owner,9),bg==C.lightGray and C.black or C.cyan,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,project=i} end
+  local per=h-10; local first=(page-1)*per+1; local last=math.min(#data.projects,first+per-1)
+  for i=first,last do local p=data.projects[i]; local y=5+i-first; local bg=selected==i and C.lightGray or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(1,y,p.status,sc(p.status),bg); at(7,y,cut(p.name,w-19),bg==C.lightGray and C.black or C.white,bg); at(w-10,y,cut(p.owner,9),bg==C.lightGray and C.black or C.cyan,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,project=i} end
   btn(1,h-4,8,"ASSIGN",C.blue,function() if selected and active then data.projects[selected].owner=active;data.projects[selected].status="BUILD";save();sound("click") else note="Select project + team member.";sound("bad") end end)
   btn(10,h-4,17,"DONE",C.lime,function() if selected then data.projects[selected].status="DONE";save();sound("done") else sound("bad") end end)
   btn(19,h-4,26,"OPEN",C.red,function() if selected then data.projects[selected].status="TODO";data.projects[selected].owner="-";save();sound("click") else sound("bad") end end)
   btn(28,h-4,w,"SAVE",C.green,function() save();sound("click") end)
   btn(1,h-2,9,"< PAGE",C.gray,function() if page>1 then page=page-1 end end); btn(11,h-2,19,"PAGE >",C.gray,function() if last<#data.projects then page=page+1 end end)
  else
-  at(1,3,"Tap a member to make them active.",C.lightGray,C.black)
-  if #data.members==0 then at(1,5,"No members yet.",C.red,C.black); at(1,6,"Use computer: city_checklist add Name",C.white,C.black) end
-  for i,m in ipairs(data.members) do local y=4+i; if y>h-2 then break end; local bg=active==m and C.lightBlue or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(2,y,(active==m and "> " or "  ")..m,bg==C.lightBlue and C.black or C.white,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,member=m} end
+  at(1,5,"Tap a member to make them active.",C.lightGray,C.black)
+  if #data.members==0 then at(1,7,"No members yet.",C.red,C.black); at(1,8,"Use computer: city_checklist add Name",C.white,C.black) end
+  for i,m in ipairs(data.members) do local y=6+i; if y>h-2 then break end; local bg=active==m and C.lightBlue or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(2,y,(active==m and "> " or "  ")..m,bg==C.lightBlue and C.black or C.white,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,member=m} end
  end
  if tab=="projects" then at(22,h-2,"Add: project add Building name",C.lightGray,C.black) end
  at(1,h,cut(note,w),C.lightGray,C.black)
