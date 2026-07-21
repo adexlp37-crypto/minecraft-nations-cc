@@ -11,7 +11,8 @@ local data={members={},projects={}}
 local tab,page,selected,active="projects",1,nil,nil
 local hits,note,pulse,deleteArmed={},"LIVE - Board ready",0,nil
 
-monitor.setTextScale(1)
+-- 1.5 is noticeably easier to read/touch on a 6x6 wall without becoming huge.
+monitor.setTextScale(1.5)
 term.redirect(monitor)
 
 local function sound(kind)
@@ -62,7 +63,7 @@ local function addMember(name)
  end
  data.members[#data.members+1]=name
  table.sort(data.members,function(a,b) return a:lower()<b:lower() end)
- save()
+ if not save() then return false,"Could not save member" end
  return true,"Member added: "..name
 end
 
@@ -73,7 +74,7 @@ local function addProject(name)
   if project.name:lower()==name:lower() then return false,"Building already exists" end
  end
  data.projects[#data.projects+1]={name=name,status="TODO",owner="-"}
- save()
+ if not save() then return false,"Could not save building" end
  return true,"Building added: "..name
 end
 
@@ -125,18 +126,20 @@ end
 
 local function drawStar()
  local w,h=monitor.getSize()
- local mainW=math.max(28,w-12)
- local sx=mainW+3
- local sy=4
- local star={"   /\\   ","  /__\\  "," /\\  /\\ ","/__\\/__\\","  \\  /  ","   \\/   "}
+ local sx,sy=w-7,3
+ if sx<2 or h<10 then return end
  local starColors={C.cyan,C.lightBlue,C.blue,C.white}
  local color=starColors[(pulse%#starColors)+1]
- for row,line in ipairs(star) do
-  fill(mainW+2,sy+row-1,w,C.black)
-  at(sx,sy+row-1,line,color,C.black)
- end
- at(mainW+3,sy+7,"AM YISRAEL",C.lightBlue,C.black)
- at(mainW+5,sy+8,"CHAI",pulse%2==0 and C.white or C.cyan,C.black)
+ for y=sy,math.min(h-1,sy+8) do fill(sx-1,y,w,C.black) end
+ -- Two separate outlined triangles form a proper Star of David.
+ paintutils.drawLine(sx+3,sy,sx,sy+5,color)
+ paintutils.drawLine(sx+3,sy,sx+6,sy+5,color)
+ paintutils.drawLine(sx,sy+5,sx+6,sy+5,color)
+ paintutils.drawLine(sx,sy+1,sx+6,sy+1,color)
+ paintutils.drawLine(sx,sy+1,sx+3,sy+6,color)
+ paintutils.drawLine(sx+6,sy+1,sx+3,sy+6,color)
+ at(sx-1,sy+7,"AM YISRAEL",C.lightBlue,C.black)
+ at(sx+1,sy+8,"CHAI",pulse%2==0 and C.white or C.cyan,C.black)
 end
 
 local function drawLive()
@@ -151,6 +154,30 @@ local function drawLive()
 end
 
 local draw
+
+local function celebrate(projectName)
+ local w,h=monitor.getSize()
+ local melody={5,7,9,12,9,12,14,16,14,17}
+ local confettiColors={C.red,C.orange,C.yellow,C.lime,C.cyan,C.lightBlue,C.purple,C.magenta,C.white}
+ local confettiChars={"*","+","o",".","|"}
+ monitor.setBackgroundColor(C.black);monitor.clear()
+ for frame=1,#melody do
+  monitor.setBackgroundColor(C.black);monitor.clear()
+  fill(1,math.max(1,math.floor(h/2)-1),w,C.green)
+  local title="TASK DONE!"
+  at(math.max(1,math.floor((w-#title)/2)+1),math.max(1,math.floor(h/2)-1),title,C.white,C.green)
+  at(math.max(1,math.floor((w-#cut(projectName,w-4))/2)+1),math.floor(h/2)+1,cut(projectName,w-4),C.lime,C.black)
+  for particle=1,math.max(18,math.floor(w*h/12)) do
+   local x=math.random(1,w)
+   local y=math.random(1,h)
+   if math.abs(y-math.floor(h/2))>2 then
+    at(x,y,confettiChars[math.random(1,#confettiChars)],confettiColors[math.random(1,#confettiColors)],C.black)
+   end
+  end
+  if speaker then pcall(speaker.playNote,"pling",2,melody[frame]) end
+  sleep(0.11)
+ end
+end
 
 local function promptOnComputer(kind)
  note="WAITING - Enter "..kind.." on computer"
@@ -198,16 +225,16 @@ end
 
 draw=function()
  local w,h=monitor.getSize()
- local mainW=math.max(28,w-12)
+ -- Keep a compact right rail for the animated symbol at the larger font size.
+ local mainW=math.max(16,w-9)
  if mainW>w then mainW=w end
  hits={}
  monitor.setBackgroundColor(C.black); monitor.clear()
  fill(1,1,w,C.gray); at(2,1,"CITY BUILD BOARD",C.white,C.gray)
- at(w-11,1,"TOUCH ONLINE",C.lime,C.gray)
  drawLive()
 
  local listTop=4
- local listBottom=math.max(listTop,h-9)
+ local listBottom=math.max(listTop,h-10)
  local perPage=math.max(1,listBottom-listTop+1)
 
  if tab=="projects" then
@@ -224,35 +251,46 @@ draw=function()
    local y=listTop+i-first
    local bg=selected==i and C.lightGray or C.black
    fill(1,y,mainW,bg)
-   at(2,y,project.status,statusColor(project.status),bg)
-   at(8,y,cut(project.name,math.max(3,mainW-20)),bg==C.lightGray and C.black or C.white,bg)
-   at(mainW-9,y,cut(project.owner,9),bg==C.lightGray and C.black or C.cyan,bg)
+   local marker=project.status=="DONE" and "[x] " or project.status=="BUILD" and "[>] " or "[ ] "
+   at(2,y,marker,statusColor(project.status),bg)
+   at(6,y,cut(project.name,math.max(3,mainW-6)),bg==C.lightGray and C.black or C.white,bg)
    hits[#hits+1]={x=1,y=y,x2=mainW,y2=y,project=i}
   end
+  if selected and data.projects[selected] then
+   local project=data.projects[selected]
+   at(2,h-8,cut("Owner: "..project.owner,mainW-2),C.cyan,C.black)
+  else
+   at(2,h-8,"Select a building",C.gray,C.black)
+  end
   button(1,h-7,mainW,"+ ADD BUILDING",C.orange,function() promptOnComputer("building") end)
-  local q=math.floor((mainW-3)/4)
-  button(1,h-5,q,"ASSIGN",C.blue,function()
+  local half=math.floor(mainW/2)
+  button(1,h-5,half-1,"ASSIGN",C.blue,function()
    if selected and data.projects[selected] and active then
-    data.projects[selected].owner=active;data.projects[selected].status="BUILD";save()
-    note=active.." assigned";deleteArmed=nil;sound("success")
+    data.projects[selected].owner=active;data.projects[selected].status="BUILD"
+    if save() then note="SAVED - "..active.." assigned";deleteArmed=nil;sound("success") end
    else note="Select building + team member";sound("bad") end
   end)
-  button(q+2,h-5,q*2+1,"DONE",C.lime,function()
-   if selected and data.projects[selected] then data.projects[selected].status="DONE";save();note="Marked complete";sound("done")
+  button(half+1,h-5,mainW,"DONE",C.lime,function()
+   if selected and data.projects[selected] then
+    local name=data.projects[selected].name
+    local previous=data.projects[selected].status
+    data.projects[selected].status="DONE"
+    if save() then note="SAVED - Completed: "..name;celebrate(name)
+    else data.projects[selected].status=previous end
    else note="Select a building first";sound("bad") end
   end)
-  button(q*2+3,h-5,q*3+2,"OPEN",C.red,function()
+  button(1,h-4,half-1,"OPEN",C.red,function()
    if selected and data.projects[selected] then data.projects[selected].status="TODO";data.projects[selected].owner="-";save();note="Reopened";sound("click")
    else note="Select a building first";sound("bad") end
   end)
-  button(q*3+4,h-5,mainW,"DELETE",C.brown,removeSelectedProject)
+  button(half+1,h-4,mainW,"DELETE",C.brown,removeSelectedProject)
   if #data.projects>perPage then
-   button(1,h-3,8,"< PAGE",C.gray,function() if page>1 then page=page-1;sound("click") else sound("bad") end end)
-   at(10,h-3,page.."/"..math.max(1,math.ceil(#data.projects/perPage)),C.lightGray,C.black)
-   button(16,h-3,24,"PAGE >",C.gray,function() if last<#data.projects then page=page+1;sound("click") else sound("bad") end end)
+   button(1,h-9,7,"<",C.gray,function() if page>1 then page=page-1;sound("click") else sound("bad") end end)
+   at(9,h-9,page.."/"..math.max(1,math.ceil(#data.projects/perPage)),C.lightGray,C.black)
+   button(mainW-6,h-9,mainW,">",C.gray,function() if last<#data.projects then page=page+1;sound("click") else sound("bad") end end)
   end
  else
-  at(2,3,"TEAM - tap a name to select",C.lightBlue,C.black)
+  at(2,3,cut("TEAM - tap a name",mainW-2),C.lightBlue,C.black)
   if #data.members==0 then
    at(2,5,"No team members yet.",C.lightGray,C.black)
    at(2,6,"Tap ADD MEMBER below.",C.white,C.black)
@@ -272,12 +310,14 @@ draw=function()
   button(1,h-5,math.floor(mainW/2)-1,"SELECTED: "..cut(active or "none",10),C.blue,function() note=active and ("Selected: "..active) or "Select a member";sound(active and "click" or "bad") end)
   button(math.floor(mainW/2)+1,h-5,mainW,"REMOVE MEMBER",C.brown,removeActiveMember)
   if #data.members>perPage then
-   button(1,h-3,8,"< PAGE",C.gray,function() if page>1 then page=page-1;sound("click") else sound("bad") end end)
-   at(10,h-3,page.."/"..math.max(1,math.ceil(#data.members/perPage)),C.lightGray,C.black)
-   button(16,h-3,24,"PAGE >",C.gray,function() if last<#data.members then page=page+1;sound("click") else sound("bad") end end)
+   button(1,h-9,7,"<",C.gray,function() if page>1 then page=page-1;sound("click") else sound("bad") end end)
+   at(9,h-9,page.."/"..math.max(1,math.ceil(#data.members/perPage)),C.lightGray,C.black)
+   button(mainW-6,h-9,mainW,">",C.gray,function() if last<#data.members then page=page+1;sound("click") else sound("bad") end end)
   end
  end
 
+ -- Repaint the right rail last so long list text can never damage the symbol.
+ drawStar()
  -- The two primary tabs always stay at the bottom-left for a tall wall monitor.
  button(1,h-1,12,"PROJECTS",tab=="projects" and C.orange or C.gray,function() tab="projects";page=1;deleteArmed=nil;note="Projects opened";sound("tab") end)
  button(14,h-1,24,"TEAM",tab=="team" and C.lightBlue or C.gray,function() tab="team";page=1;deleteArmed=nil;note="Team opened";sound("tab") end)
