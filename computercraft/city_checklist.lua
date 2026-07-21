@@ -1,148 +1,57 @@
--- Shared building and infrastructure checklist for an Advanced Monitor.
--- Start with your Minecraft name: city_checklist Azadi
-
-local monitor = peripheral.find("monitor")
-if not monitor then error("Connect an Advanced Monitor first.", 0) end
-if not monitor.isColor() then error("This board needs an Advanced Monitor.", 0) end
-
+-- Touch checklist. Admin commands: city_checklist add Name | remove Name
+local monitor=peripheral.find("monitor")
+if not monitor or not monitor.isColor() then error("Connect an Advanced Monitor.",0) end
 monitor.setTextScale(1)
-local oldTerm = term.redirect(monitor)
-local C = colors
-local SAVE_FILE = ".city_checklist_data"
-local member = table.concat({ ... }, " ")
-if member == "" then member = "UNASSIGNED" end
+local old=term.redirect(monitor)
+local C=colors
+local FILE=".city_checklist_v2"
+local args={...}
+local defaults={"Military Base","Main Power Plant","Administration Building","Housing District","Main Roads","Parking","National Bank","School","Winery","South Power Plant","Market Square","Storage Yard","Harbor Expansion"}
+local data={members={},projects={}}
+local tab,page,selected,active,hits,note="projects",1,nil,nil,{},"Tap a project."
 
-local defaultProjects = {
-  {name="Military Base", kind="Building"},
-  {name="Main Power Plant", kind="Infrastructure"},
-  {name="Administration Building", kind="Building"},
-  {name="Housing District", kind="District"},
-  {name="Main Roads", kind="Infrastructure"},
-  {name="Parking", kind="Infrastructure"},
-  {name="National Bank", kind="Building"},
-  {name="School", kind="Building"},
-  {name="Winery", kind="Building"},
-  {name="South Power Plant", kind="Optional"},
-  {name="Market Square", kind="Optional"},
-  {name="Storage Yard", kind="Optional"},
-  {name="Harbor Expansion", kind="Optional"},
-}
-
-local projects, page, selected, hitboxes, notice = {}, 1, nil, {}, "Select a project."
-
-local function save()
-  local file = fs.open(SAVE_FILE, "w")
-  if not file then notice="Save failed."; return end
-  file.write(textutils.serialize(projects))
-  file.close()
-  notice="Saved."
-end
-
+local function save() local f=fs.open(FILE,"w"); if f then f.write(textutils.serialize(data)); f.close(); note="Saved." end end
 local function load()
-  if fs.exists(SAVE_FILE) then
-    local file = fs.open(SAVE_FILE, "r")
-    local saved = file and textutils.unserialize(file.readAll())
-    if file then file.close() end
-    if type(saved) == "table" then projects=saved; return end
-  end
-  for _, project in ipairs(defaultProjects) do
-    projects[#projects+1] = {name=project.name, kind=project.kind, status="TODO", owner="-"}
-  end
+ if fs.exists(FILE) then local f=fs.open(FILE,"r"); local d=f and textutils.unserialize(f.readAll()); if f then f.close() end; if type(d)=="table" and d.projects then data=d; return end end
+ for _,n in ipairs(defaults) do data.projects[#data.projects+1]={name=n,status="TODO",owner="-"} end
 end
-
-local function writeAt(x,y,value,foreground,background)
-  local w,h=monitor.getSize()
-  if y<1 or y>h or x>w then return end
-  monitor.setCursorPos(math.max(1,x),y)
-  monitor.setTextColor(foreground or C.white)
-  monitor.setBackgroundColor(background or C.black)
-  monitor.write(tostring(value):sub(1,math.max(0,w-x+1)))
+local function add(name)
+ if not name or name=="" then print("Usage: city_checklist add Name"); return end
+ for _,m in ipairs(data.members) do if m:lower()==name:lower() then print("Already added."); return end end
+ data.members[#data.members+1]=name; table.sort(data.members); save(); print("Added "..name)
 end
-
-local function short(value, width)
-  value=tostring(value or "")
-  return #value>width and value:sub(1,math.max(1,width-1)).."~" or value
+local function remove(name)
+ for i,m in ipairs(data.members) do if m:lower()==tostring(name):lower() then table.remove(data.members,i); if active==m then active=nil end; save(); print("Removed "..m); return end end
+ print("Member not found.")
 end
-
-local function button(x1,y,x2,label,colour,action)
-  monitor.setCursorPos(x1,y)
-  monitor.setBackgroundColor(colour)
-  monitor.setTextColor(colour==C.yellow or colour==C.lime and C.black or C.white)
-  monitor.write((" "..label.." "):sub(1,x2-x1+1))
-  hitboxes[#hitboxes+1]={x1=x1,y1=y,x2=x2,y2=y,action=action}
-end
-
-local function statusColour(status)
-  if status=="DONE" then return C.lime end
-  if status=="BUILD" then return C.yellow end
-  return C.red
-end
-
-local function draw()
-  local w,h=monitor.getSize()
-  hitboxes={}
-  monitor.setBackgroundColor(C.black)
-  monitor.clear()
-  monitor.setBackgroundColor(C.gray)
-  monitor.setCursorPos(1,1)
-  monitor.setTextColor(C.white)
-  monitor.write(" CITY BUILD CHECKLIST")
-  writeAt(1,2,"Logged in: "..short(member,w-12),C.lightBlue,C.black)
-  writeAt(w-7,2,"Pg "..page,C.lightGray,C.black)
-
-  local rowsPerPage=h-9
-  local first=(page-1)*rowsPerPage+1
-  local last=math.min(#projects,first+rowsPerPage-1)
-  for index=first,last do
-    local project=projects[index]
-    local y=3+(index-first)
-    local active=selected==index
-    monitor.setBackgroundColor(active and C.lightGray or C.black)
-    monitor.setCursorPos(1,y)
-    monitor.write(string.rep(" ",w))
-    writeAt(1,y,project.status,statusColour(project.status),active and C.lightGray or C.black)
-    writeAt(7,y,short(project.name,math.max(8,w-20)),active and C.black or C.white,active and C.lightGray or C.black)
-    writeAt(w-10,y,short(project.owner,9),active and C.black or C.cyan,active and C.lightGray or C.black)
-    hitboxes[#hitboxes+1]={x1=1,y1=y,x2=w,y2=y,project=index}
-  end
-
-  local controlsY=h-5
-  button(1,controlsY,8,"TAKE",C.blue,function()
-    if not selected then notice="Select a project first." elseif member=="UNASSIGNED" then notice="Run: city_checklist YourName" else
-      projects[selected].owner=member; projects[selected].status="BUILD"; save()
-    end
-  end)
-  button(10,controlsY,17,"DONE",C.lime,function()
-    if selected then projects[selected].status="DONE"; save() else notice="Select a project first." end
-  end)
-  button(19,controlsY,26,"TODO",C.red,function()
-    if selected then projects[selected].status="TODO"; projects[selected].owner="-"; save() else notice="Select a project first." end
-  end)
-  button(28,controlsY,w,"SAVE",C.green,save)
-  button(1,h-3,8,"< PAGE",C.gray,function() if page>1 then page=page-1 end end)
-  button(10,h-3,17,"PAGE >",C.gray,function() if last<#projects then page=page+1 end end)
-  button(19,h-3,w,"REFRESH",C.gray,function() notice="Board refreshed." end)
-  writeAt(1,h,short(notice,w),C.lightGray,C.black)
-end
-
 load()
-draw()
-while true do
-  local event,side,x,y=os.pullEventRaw()
-  if event=="monitor_touch" then
-    for i=#hitboxes,1,-1 do
-      local box=hitboxes[i]
-      if x>=box.x1 and x<=box.x2 and y>=box.y1 and y<=box.y2 then
-        if box.project then selected=box.project; notice=projects[selected].name else box.action() end
-        draw()
-        break
-      end
-    end
-  elseif event=="monitor_resize" then
-    draw()
-  elseif event=="terminate" then
-    term.redirect(oldTerm)
-    return
-  end
+if args[1]=="add" then add(table.concat(args," ",2)); term.redirect(old); return end
+if args[1]=="remove" then remove(table.concat(args," ",2)); term.redirect(old); return end
+
+local function at(x,y,s,fg,bg) local w,h=monitor.getSize(); if y<1 or y>h then return end; monitor.setCursorPos(x,y); monitor.setTextColor(fg or C.white); monitor.setBackgroundColor(bg or C.black); monitor.write(tostring(s):sub(1,w-x+1)) end
+local function cut(s,n) s=tostring(s or ""); return #s>n and s:sub(1,n-1).."~" or s end
+local function btn(x,y,x2,label,col,fn) monitor.setCursorPos(x,y); monitor.setBackgroundColor(col); monitor.setTextColor((col==C.yellow or col==C.lime) and C.black or C.white); monitor.write((" "..label.." "):sub(1,x2-x+1)); hits[#hits+1]={x=x,y=y,x2=x2,y2=y,fn=fn} end
+local function sc(s) return s=="DONE" and C.lime or s=="BUILD" and C.yellow or C.red end
+local function draw()
+ local w,h=monitor.getSize(); hits={}; monitor.setBackgroundColor(C.black); monitor.clear(); monitor.setBackgroundColor(C.gray); monitor.setCursorPos(1,1); monitor.setTextColor(C.white); monitor.write(" CITY BUILD BOARD")
+ btn(1,2,11,"PROJECTS",tab=="projects" and C.lightBlue or C.gray,function() tab="projects";page=1 end)
+ btn(13,2,20,"TEAM",tab=="team" and C.lightBlue or C.gray,function() tab="team";page=1 end)
+ at(22,2,"Active: "..cut(active or "none",w-29),C.yellow,C.black)
+ if tab=="projects" then
+  local per=h-8; local first=(page-1)*per+1; local last=math.min(#data.projects,first+per-1)
+  for i=first,last do local p=data.projects[i]; local y=3+i-first; local bg=selected==i and C.lightGray or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(1,y,p.status,sc(p.status),bg); at(7,y,cut(p.name,w-19),bg==C.lightGray and C.black or C.white,bg); at(w-10,y,cut(p.owner,9),bg==C.lightGray and C.black or C.cyan,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,project=i} end
+  btn(1,h-4,8,"ASSIGN",C.blue,function() if selected and active then data.projects[selected].owner=active;data.projects[selected].status="BUILD";save() else note="Select project + team member." end end)
+  btn(10,h-4,17,"DONE",C.lime,function() if selected then data.projects[selected].status="DONE";save() end end)
+  btn(19,h-4,26,"OPEN",C.red,function() if selected then data.projects[selected].status="TODO";data.projects[selected].owner="-";save() end end)
+  btn(28,h-4,w,"SAVE",C.green,save)
+  btn(1,h-2,9,"< PAGE",C.gray,function() if page>1 then page=page-1 end end); btn(11,h-2,19,"PAGE >",C.gray,function() if last<#data.projects then page=page+1 end end)
+ else
+  at(1,3,"Tap a member to make them active.",C.lightGray,C.black)
+  if #data.members==0 then at(1,5,"No members yet.",C.red,C.black); at(1,6,"Use computer: city_checklist add Name",C.white,C.black) end
+  for i,m in ipairs(data.members) do local y=4+i; if y>h-2 then break end; local bg=active==m and C.lightBlue or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(2,y,(active==m and "> " or "  ")..m,bg==C.lightBlue and C.black or C.white,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,member=m} end
+ end
+ at(1,h,cut(note,w),C.lightGray,C.black)
 end
+draw()
+while true do local e,_,x,y=os.pullEventRaw(); if e=="monitor_touch" then for i=#hits,1,-1 do local b=hits[i]; if x>=b.x and x<=b.x2 and y>=b.y and y<=b.y2 then if b.project then selected=b.project;note=data.projects[selected].name elseif b.member then active=b.member;note="Active: "..active else b.fn() end; draw();break end end elseif e=="monitor_resize" then draw() elseif e=="terminate" then term.redirect(old);return end end
 
