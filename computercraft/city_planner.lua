@@ -1,197 +1,224 @@
--- Interactive city planning display for a 6x6 Advanced Monitor.
--- CC:Tweaked: place this file on the computer and run `city_planner`.
+-- Minecraft Nations City Planner
+-- 6x6 Advanced Monitor editor. Every change is stored on this computer.
 
 local monitor = peripheral.find("monitor")
-if not monitor then error("No monitor found. Connect a 6x6 Advanced Monitor.", 0) end
-if not monitor.isColor() then error("An Advanced Monitor is required.", 0) end
+if not monitor then error("Connect an Advanced Monitor first.", 0) end
+if not monitor.isColor() then error("This planner needs an Advanced Monitor.", 0) end
 
-monitor.setTextScale(0.5)
+monitor.setTextScale(1)
 local oldTerm = term.redirect(monitor)
-
 local C = colors
-local projects = {
-  { id="military", name="Military Base", kind="Military", color=C.green,
-    rect={8,3,93,23}, status="Planned", note="Large northern base and expansion reserve." },
-  { id="admin_north", name="North Administration", kind="Administration", color=C.yellow,
-    rect={7,24,24,33}, status="Planned", note="Coastal administrative outpost." },
-  { id="power", name="Power Plant", kind="Power", color=C.blue,
-    rect={25,43,40,51}, status="Planned", note="Power generation site west of the main road." },
-  { id="admin_centre", name="Central Administration", kind="Administration", color=C.yellow,
-    rect={43,42,57,49}, status="Planned", note="Government building near the city centre." },
-  { id="parking", name="Central Parking", kind="Parking", color=C.lightBlue,
-    rect={17,58,38,68}, status="Planned", note="Parking area beside the civic district." },
-  { id="housing", name="Housing District", kind="Housing", color=C.lightGray,
-    rect={26,50,61,76}, status="Planned", note="Primary residential and civic development zone." },
-  { id="power_south", name="South Power Plant", kind="Power", color=C.blue,
-    rect={13,80,29,88}, status="Optional", note="Secondary power facility near the harbour." },
-  { id="winery", name="Winery", kind="Winery", color=C.magenta,
-    rect={49,80,65,86}, status="Planned", note="Winery on the southern city road." },
-  { id="bank", name="Bank", kind="Bank", color=C.purple,
-    rect={46,87,65,92}, status="Planned", note="Financial district and national bank." },
-  { id="school", name="School", kind="School", color=C.lime,
-    rect={50,93,67,98}, status="Planned", note="School at the southern edge of the city." },
+local SAVE_FILE = ".city_planner_data"
+
+local categories = {
+  { "BORD", C.red }, { "PWR", C.blue }, { "ADMIN", C.yellow },
+  { "HOME", C.lightGray }, { "BASE", C.green }, { "ROAD", C.black },
+  { "BANK", C.purple }, { "SCHL", C.lime }, { "WINE", C.magenta },
+  { "PARK", C.lightBlue },
 }
 
--- Normalised outlines based on the supplied planning sketch.
-local border = {
-  {15,98},{10,90},{12,82},{7,73},{16,64},{23,59},{25,52},{33,48},
-  {31,40},{35,31},{43,25},{55,22},{73,24},{83,29},{89,38},{91,48},
-  {87,60},{85,73},{79,84},{72,97}
-}
-local coast = {
-  {0,0},{38,0},{38,15},{34,28},{30,41},{20,52},{8,62},{0,67}
-}
-local mainRoad = {
-  {36,27},{34,38},{38,48},{35,58},{38,66},{35,75},{40,83},{42,98}
-}
-local eastRoads = {
-  {{38,34},{52,32},{64,28},{78,27}},
-  {{37,40},{52,38},{68,34},{82,31}},
-  {{37,47},{54,45},{70,40},{85,37}},
-  {{38,54},{56,52},{72,47},{87,43}},
-  {{38,60},{57,58},{74,54},{89,49}},
-}
+local grid, canvasW, canvasH = {}, 0, 0
+local selectedColor, tool, boxStart = C.red, "paint", nil
+local history, hitboxes, notice = {}, {}, "Tap a colour, then draw."
 
-local selected = nil
-local hitboxes = {}
-
-local function fill(x1, y1, x2, y2, color)
-  paintutils.drawFilledBox(math.floor(x1), math.floor(y1), math.floor(x2), math.floor(y2), color)
-end
-
-local function text(x, y, value, foreground, background)
+local function writeAt(x, y, value, foreground, background)
   local w, h = monitor.getSize()
   if y < 1 or y > h or x > w then return end
-  monitor.setCursorPos(math.max(1, math.floor(x)), math.floor(y))
+  monitor.setCursorPos(math.max(1, x), y)
   monitor.setTextColor(foreground or C.white)
   monitor.setBackgroundColor(background or C.black)
-  monitor.write(tostring(value):sub(1, math.max(0, w - math.floor(x) + 1)))
+  monitor.write(tostring(value):sub(1, math.max(0, w - x + 1)))
 end
 
-local function center(x1, x2, y, value, foreground, background)
-  value = tostring(value)
-  text(math.floor((x1 + x2 - #value + 1) / 2), y, value, foreground, background)
+local function terrain(x, y, w)
+  if x <= math.floor(w * 0.27) then return C.blue end
+  if x >= math.floor(w * 0.86) then return C.gray end
+  return C.yellow
 end
 
-local function line(points, color, tx, ty)
-  for i = 1, #points - 1 do
-    local a, b = points[i], points[i + 1]
-    paintutils.drawLine(tx(a[1]), ty(a[2]), tx(b[1]), ty(b[2]), color)
+local function makeGrid(w, h)
+  local result = {}
+  for y = 1, h do
+    result[y] = {}
+    for x = 1, w do result[y][x] = terrain(x, y, w) end
+  end
+  return result
+end
+
+local function paintLine(x1, y1, x2, y2, colour)
+  local dx, dy = math.abs(x2-x1), math.abs(y2-y1)
+  local sx, sy = x1 < x2 and 1 or -1, y1 < y2 and 1 or -1
+  local err = dx - dy
+  while true do
+    if grid[y1] and grid[y1][x1] then grid[y1][x1] = colour end
+    if x1 == x2 and y1 == y2 then break end
+    local twice = 2 * err
+    if twice > -dy then err = err - dy; x1 = x1 + sx end
+    if twice < dx then err = err + dx; y1 = y1 + sy end
   end
 end
 
-local function wrap(value, width)
-  local rows, current = {}, ""
-  for word in tostring(value):gmatch("%S+") do
-    if #current == 0 then current = word
-    elseif #current + #word + 1 <= width then current = current .. " " .. word
-    else rows[#rows + 1], current = current, word end
-  end
-  if #current > 0 then rows[#rows + 1] = current end
-  return rows
+local function outline(x1, y1, x2, y2, colour)
+  local left, right = math.min(x1,x2), math.max(x1,x2)
+  local top, bottom = math.min(y1,y2), math.max(y1,y2)
+  paintLine(left,top,right,top,colour)
+  paintLine(right,top,right,bottom,colour)
+  paintLine(right,bottom,left,bottom,colour)
+  paintLine(left,bottom,left,top,colour)
 end
 
-local function button(x1, y1, x2, y2, label, active, action)
-  fill(x1, y1, x2, y2, active and C.lightGray or C.gray)
-  center(x1, x2, y1, label, active and C.black or C.white,
-    active and C.lightGray or C.gray)
-  hitboxes[#hitboxes + 1] = {x1=x1,y1=y1,x2=x2,y2=y2,action=action}
+local function seedPlan()
+  grid = makeGrid(canvasW, canvasH)
+  -- A clean, editable starting version of the supplied rough sketch.
+  outline(6,2,canvasW-4,5,C.green)       -- military base
+  outline(5,7,10,10,C.yellow)            -- north administration
+  outline(10,12,15,15,C.blue)            -- power plant
+  outline(14,16,20,19,C.yellow)          -- administration
+  outline(6,18,13,22,C.lightBlue)        -- parking
+  outline(12,18,22,canvasH-4,C.lightGray)-- housing
+  outline(5,canvasH-7,10,canvasH-4,C.blue)
+  outline(15,canvasH-8,21,canvasH-6,C.magenta)
+  outline(15,canvasH-5,21,canvasH-3,C.purple)
+  outline(16,canvasH-2,22,canvasH,C.lime)
+  paintLine(11,6,11,canvasH,C.black)
+  paintLine(11,16,canvasW-5,16,C.black)
+  paintLine(11,22,canvasW-6,22,C.black)
+  paintLine(4,canvasH,3,canvasH-5,C.red)
+  paintLine(3,canvasH-5,6,canvasH-10,C.red)
+  paintLine(6,canvasH-10,7,7,C.red)
+  paintLine(7,7,canvasW-5,6,C.red)
+  paintLine(canvasW-5,6,canvasW-3,canvasH-3,C.red)
 end
 
-local function drawMap(mapX1, mapY1, mapX2, mapY2)
-  local mapW, mapH = mapX2-mapX1+1, mapY2-mapY1+1
-  local tx = function(n) return mapX1 + math.floor(n / 100 * (mapW-1)) end
-  local ty = function(n) return mapY1 + math.floor(n / 100 * (mapH-1)) end
-
-  fill(mapX1, mapY1, mapX2, mapY2, C.brown)
-  -- Ocean and a rough sandy coastal shelf.
-  fill(mapX1, mapY1, tx(37), mapY2, C.blue)
-  line(coast, C.lightBlue, tx, ty)
-  for y=0,100 do
-    local coastX = 38 - math.max(0, y-15) * 0.45
-    if y > 67 then coastX = 0 end
-    if coastX > 0 then fill(tx(coastX),ty(y),mapX2,ty(y),C.yellow) end
-  end
-  -- Mountain/river side gives orientation without copying the source image.
-  fill(tx(72), mapY1, mapX2, mapY2, C.lightGray)
-  line({{71,0},{75,18},{70,37},{76,57},{72,78},{78,100}}, C.gray, tx, ty)
-  line({{66,20},{68,40},{65,60},{69,80},{66,100}}, C.cyan, tx, ty)
-
-  line(border, C.red, tx, ty)
-  line(mainRoad, C.black, tx, ty)
-  for _, road in ipairs(eastRoads) do line(road, C.red, tx, ty) end
-
-  for index, p in ipairs(projects) do
-    local r = p.rect
-    local x1,y1,x2,y2 = tx(r[1]),ty(r[2]),tx(r[3]),ty(r[4])
-    paintutils.drawBox(x1,y1,x2,y2,p.color)
-    if selected == index then
-      if x2-x1 > 2 and y2-y1 > 2 then paintutils.drawBox(x1+1,y1+1,x2-1,y2-1,C.white) end
-    end
-    hitboxes[#hitboxes + 1] = {x1=x1,y1=y1,x2=x2,y2=y2,project=index}
-  end
+local function copyGrid()
+  return textutils.serialize(grid)
 end
 
-local function drawSidebar(x1, y1, x2, y2)
-  fill(x1,y1,x2,y2,C.black)
-  local width = x2-x1+1
-  center(x1,x2,y1,"CITY PLAN",C.yellow,C.black)
-  paintutils.drawLine(x1,y1+1,x2,y1+1,C.gray)
+local function remember()
+  history[#history + 1] = copyGrid()
+  if #history > 20 then table.remove(history, 1) end
+end
 
-  if selected then
-    local p = projects[selected]
-    fill(x1+1,y1+3,x1+2,y1+4,p.color)
-    text(x1+4,y1+3,p.name,C.white,C.black)
-    text(x1+1,y1+6,"TYPE",C.lightGray,C.black)
-    text(x1+1,y1+7,p.kind,p.color,C.black)
-    text(x1+1,y1+9,"STATUS",C.lightGray,C.black)
-    text(x1+1,y1+10,p.status,p.status == "Optional" and C.orange or C.lime,C.black)
-    local rows = wrap(p.note,width-2)
-    text(x1+1,y1+12,"NOTES",C.lightGray,C.black)
-    for i=1,math.min(#rows,math.max(0,y2-y1-17)) do
-      text(x1+1,y1+12+i,rows[i],C.white,C.black)
-    end
-    button(x1+1,y2-1,x2-1,y2-1,"< LEGEND",false,function() selected=nil end)
+local function undo()
+  local last = table.remove(history)
+  if last then
+    local restored = textutils.unserialize(last)
+    if type(restored) == "table" then grid = restored; notice = "Last change undone." end
   else
-    local legend = {
-      {C.red,"Border"},{C.blue,"Power"},{C.yellow,"Administration"},
-      {C.lightGray,"Housing"},{C.green,"Military"},{C.black,"Roads"},
-      {C.purple,"Bank"},{C.lime,"School"},{C.magenta,"Winery"},
-      {C.lightBlue,"Parking"},
-    }
-    local row = y1+3
-    for _, item in ipairs(legend) do
-      if row > y2-7 then break end
-      fill(x1+1,row,x1+2,row,item[1])
-      text(x1+4,row,item[2],C.white,C.black)
-      row=row+2
-    end
-    text(x1+1,y2-4,"Touch a marked",C.lightGray,C.black)
-    text(x1+1,y2-3,"area for details.",C.lightGray,C.black)
-    text(x1+1,y2-1,"Tier III plan",C.yellow,C.black)
+    notice = "Nothing to undo."
   end
+end
+
+local function save()
+  local file = fs.open(SAVE_FILE, "w")
+  if not file then notice = "Could not save."; return end
+  file.write(textutils.serialize({ width=canvasW, height=canvasH, grid=grid }))
+  file.close()
+  notice = "Plan saved on this computer."
+end
+
+local function load()
+  if not fs.exists(SAVE_FILE) then seedPlan(); notice="Loaded starter plan."; return end
+  local file = fs.open(SAVE_FILE, "r")
+  local data = file and textutils.unserialize(file.readAll())
+  if file then file.close() end
+  if type(data) == "table" and type(data.grid) == "table" then
+    grid = data.grid
+    notice = "Saved plan loaded."
+  else
+    seedPlan()
+    notice = "Save was invalid; starter plan loaded."
+  end
+end
+
+local function button(x1, y, x2, label, colour, action)
+  monitor.setBackgroundColor(colour or C.gray)
+  monitor.setTextColor((colour == C.yellow or colour == C.lime or colour == C.lightBlue) and C.black or C.white)
+  monitor.setCursorPos(x1, y)
+  monitor.write((" " .. label .. " "):sub(1, x2-x1+1))
+  hitboxes[#hitboxes + 1] = {x1=x1,y1=y,x2=x2,y2=y,action=action}
 end
 
 local function draw()
+  local w, h = monitor.getSize()
+  local sideW = math.max(13, math.floor(w * 0.31))
+  local mapX2 = w - sideW - 1
+  local mapY1, mapY2 = 3, h
+  local newCanvasW, newCanvasH = mapX2, mapY2-mapY1+1
+  if canvasW ~= newCanvasW or canvasH ~= newCanvasH then
+    canvasW, canvasH = newCanvasW, newCanvasH
+    if #grid == 0 then load() end
+  end
+
   hitboxes = {}
   monitor.setBackgroundColor(C.black)
-  monitor.setTextColor(C.white)
   monitor.clear()
-  local w,h = monitor.getSize()
-  local sideW = math.max(20,math.floor(w*0.29))
-  local mapX2 = w-sideW-1
-  fill(1,1,w,2,C.gray)
-  text(2,1,"NATION CITY DEVELOPMENT",C.white,C.gray)
-  text(2,2,"TIER III / MASTER PLAN",C.yellow,C.gray)
-  drawMap(1,3,mapX2,h)
-  drawSidebar(mapX2+2,1,w,h)
+  monitor.setBackgroundColor(C.gray)
+  monitor.setTextColor(C.white)
+  monitor.setCursorPos(1,1)
+  monitor.write(" CITY PLANNER")
+  writeAt(1,2,"EDIT MODE  |  " .. (tool == "box" and "BOX: choose 2 corners" or tool:upper()),C.lightGray,C.black)
+
+  -- The map deliberately uses whole monitor cells: no tiny anti-aliased text,
+  -- and every visible cell is directly editable.
+  for y = 1, canvasH do
+    for x = 1, canvasW do
+      paintutils.drawPixel(x, mapY1+y-1, grid[y][x] or terrain(x,y,canvasW))
+    end
+  end
+
+  local sx1, sx2 = mapX2+2, w
+  monitor.setBackgroundColor(C.black)
+  for y=1,h do
+    monitor.setCursorPos(sx1,y)
+    monitor.write(string.rep(" ",sideW))
+  end
+  writeAt(sx1,2,"NATION PLAN",C.yellow,C.black)
+  writeAt(sx1,3,"6x6 EDITOR",C.lightGray,C.black)
+  writeAt(sx1,4,"",C.white,C.black)
+  writeAt(sx1,5,"PALETTE",C.white,C.black)
+
+  local row = 6
+  for _, item in ipairs(categories) do
+    if row > h-7 then break end
+    local marker = selectedColor == item[2] and ">" or " "
+    button(sx1,row,sx2,marker .. item[1],item[2],function()
+      selectedColor=item[2]; tool="paint"; boxStart=nil; notice=item[1] .. " selected."
+    end)
+    row=row+1
+  end
+  row = math.max(row+1,h-6)
+  button(sx1,row,sx2,"BOX",tool=="box" and C.lightGray or C.gray,function()
+    tool="box"; boxStart=nil; notice="Tap two map corners."
+  end)
+  button(sx1,row+1,sx2,"ERASE",C.gray,function()
+    tool="erase"; boxStart=nil; notice="Tap cells to restore terrain."
+  end)
+  button(sx1,row+2,sx2,"UNDO",C.gray,undo)
+  button(sx1,row+3,sx2,"SAVE",C.green,save)
+  button(sx1,row+4,sx2,"LOAD",C.blue,load)
+  button(sx1,row+5,sx2,"RESET",C.red,function()
+    remember(); seedPlan(); notice="Starter plan restored."
+  end)
+
+  -- Map cells are the final hitboxes, so their editing takes priority.
+  hitboxes[#hitboxes + 1] = {x1=1,y1=mapY1,x2=mapX2,y2=mapY2,map=true}
+  writeAt(1,h,notice:sub(1,mapX2),C.white,C.black)
 end
 
-local function cleanup()
-  term.redirect(oldTerm)
-  monitor.setBackgroundColor(C.black)
-  monitor.setTextColor(C.white)
-  monitor.clear()
+local function editCell(x, y)
+  if tool == "box" then
+    if not boxStart then
+      boxStart={x=x,y=y}; notice="Second corner..."
+    else
+      remember(); outline(boxStart.x,boxStart.y,x,y,selectedColor)
+      boxStart=nil; notice="Plot outline drawn."
+    end
+  else
+    remember()
+    grid[y][x] = tool == "erase" and terrain(x,y,canvasW) or selectedColor
+    notice = tool == "erase" and "Terrain restored." or "Cell painted."
+  end
 end
 
 draw()
@@ -199,17 +226,17 @@ while true do
   local event, side, x, y = os.pullEventRaw()
   if event == "monitor_touch" then
     for i=#hitboxes,1,-1 do
-      local box=hitboxes[i]
-      if x>=box.x1 and x<=box.x2 and y>=box.y1 and y<=box.y2 then
-        if box.project then selected=box.project elseif box.action then box.action() end
+      local box = hitboxes[i]
+      if x >= box.x1 and x <= box.x2 and y >= box.y1 and y <= box.y2 then
+        if box.map then editCell(x, y-2) else box.action() end
         draw()
         break
       end
     end
   elseif event == "monitor_resize" then
-    draw()
+    grid = {}; canvasW, canvasH = 0, 0; notice="Screen resized; loaded plan."; draw()
   elseif event == "terminate" then
-    cleanup()
+    term.redirect(oldTerm)
     return
   end
 end
