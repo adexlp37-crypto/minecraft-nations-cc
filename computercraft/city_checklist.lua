@@ -52,8 +52,9 @@ local function draw()
  btn(13,4,20,"TEAM",tab=="team" and C.lightBlue or C.gray,function() tab="team";page=1 end)
  at(22,4,"Active: "..cut(active or "none",w-29),C.yellow,C.black)
  if tab=="projects" then
-  local per=h-10; local first=(page-1)*per+1; local last=math.min(#data.projects,first+per-1)
+  local per=h-12; local first=(page-1)*per+1; local last=math.min(#data.projects,first+per-1)
   for i=first,last do local p=data.projects[i]; local y=5+i-first; local bg=selected==i and C.lightGray or C.black; monitor.setBackgroundColor(bg); monitor.setCursorPos(1,y); monitor.write(string.rep(" ",w)); at(1,y,p.status,sc(p.status),bg); at(7,y,cut(p.name,w-19),bg==C.lightGray and C.black or C.white,bg); at(w-10,y,cut(p.owner,9),bg==C.lightGray and C.black or C.cyan,bg); hits[#hits+1]={x=1,y=y,x2=w,y2=y,project=i} end
+  btn(1,h-6,w,"+ ADD BUILDING - COMPUTER",C.orange,function() note="Computer: city_checklist project add Building name";sound("click") end)
   btn(1,h-4,8,"ASSIGN",C.blue,function() if selected and active then data.projects[selected].owner=active;data.projects[selected].status="BUILD";save();sound("click") else note="Select project + team member.";sound("bad") end end)
   btn(10,h-4,17,"DONE",C.lime,function() if selected then data.projects[selected].status="DONE";save();sound("done") else sound("bad") end end)
   btn(19,h-4,26,"OPEN",C.red,function() if selected then data.projects[selected].status="TODO";data.projects[selected].owner="-";save();sound("click") else sound("bad") end end)
