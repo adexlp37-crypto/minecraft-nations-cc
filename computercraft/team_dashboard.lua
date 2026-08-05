@@ -11,7 +11,7 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "20"
+local dashboardVersion = "21"
 local playerRefreshSeconds = 4
 local teamRefreshSeconds = 300
 local animationSeconds = 0.5
@@ -229,10 +229,11 @@ end
 
 local function drawBackButton(label)
   local width, height = target.getSize()
-  local backColors = { colors.gray, colors.cyan, colors.purple, colors.orange }
+  local backColors = { colors.blue, colors.cyan, colors.lightBlue, colors.white }
   local index = math.floor(animationFrame / 5) % #backColors + 1
   local background = backColors[index]
-  local foreground = background == colors.gray and colors.white or colors.black
+  local foreground = (background == colors.blue or background == colors.purple) and
+    colors.white or colors.black
   local text = label or "<  BACK  "
   writeAt(target, 1, height, (" " .. text .. " "):sub(1, math.min(width, #text + 2)),
     foreground, background)
@@ -258,20 +259,22 @@ end
 local function drawMainTabs(active)
   local width, height = target.getSize()
   local tabs = {
-    { mode="list", label="TEAMS", color=colors.cyan },
-    { mode="map", label="MAP", color=colors.lime },
-    { mode="away", label="AWAY", color=colors.orange },
-    { mode="online", label="ONLINE", color=colors.lightBlue },
-    { mode="roles", label="ROLES", color=colors.purple }
+    { mode="list", label="TEAMS", active=colors.white, idle=colors.lightGray },
+    { mode="map", label="MAP", active=colors.lightBlue, idle=colors.cyan },
+    { mode="away", label="AWAY", active=colors.cyan, idle=colors.blue },
+    { mode="online", label="ONLINE", active=colors.blue, idle=colors.purple },
+    { mode="roles", label="ROLES", active=colors.lightBlue, idle=colors.blue }
   }
   mainTabHits = {}
   for index, tabInfo in ipairs(tabs) do
     local x1 = math.floor((index - 1) * width / #tabs) + 1
     local x2 = math.floor(index * width / #tabs)
     local selected = active == tabInfo.mode
-    centeredButton(x1, x2, height, tabInfo.label,
-      selected and colors.black or colors.white,
-      selected and tabInfo.color or colors.gray)
+    local background = selected and tabInfo.active or tabInfo.idle
+    local foreground = (background == colors.blue or background == colors.purple) and
+      colors.white or colors.black
+    local label = selected and ("[" .. tabInfo.label .. "]") or tabInfo.label
+    centeredButton(x1, x2, height, label, foreground, background)
     mainTabHits[#mainTabHits + 1] = { x1=x1, x2=x2, mode=tabInfo.mode }
   end
 end
@@ -289,8 +292,9 @@ local function selectMainTab(x)
 end
 
 local function drawPageButtons(y, current, total)
-  writeAt(target, 1, y, "< PREV ", colors.white, current > 1 and colors.gray or colors.black)
-  writeAt(target, 8, y, " NEXT > ", colors.white, current < total and colors.gray or colors.black)
+  writeAt(target, 1, y, "< PREV ", colors.white, current > 1 and colors.blue or colors.gray)
+  writeAt(target, 8, y, " NEXT > ", colors.black,
+    current < total and colors.lightBlue or colors.gray)
   local width = target.getSize()
   local status = tostring(current) .. "/" .. tostring(total)
   writeAt(target, math.max(17, width - #status + 1), y, status, colors.lightGray, colors.black)
@@ -647,8 +651,10 @@ local function drawAwayPlayers()
     end
   end
 
-  writeAt(target, 1, height - 1, "< PREV ", colors.white, awayPage > 1 and colors.gray or colors.black)
-  writeAt(target, 9, height - 1, " NEXT > ", colors.white, awayPage < pages and colors.gray or colors.black)
+  writeAt(target, 1, height - 1, "< PREV ", colors.white,
+    awayPage > 1 and colors.blue or colors.gray)
+  writeAt(target, 9, height - 1, " NEXT > ", colors.black,
+    awayPage < pages and colors.lightBlue or colors.gray)
   local status = tostring(awayPage) .. "/" .. tostring(pages) .. "  " .. #players .. " AWAY"
   writeAt(target, math.max(18, width - #status + 1), height - 1, status, colors.orange, colors.black)
 end
@@ -831,9 +837,9 @@ local function drawDetails(team)
   end
   drawBackButton("< BACK")
   writeAt(target, 11, height, "< PREV ", colors.white,
-    detailPage > 1 and colors.gray or colors.black)
-  writeAt(target, 19, height, " NEXT > ", colors.white,
-    detailPage < pages and colors.gray or colors.black)
+    detailPage > 1 and colors.blue or colors.gray)
+  writeAt(target, 19, height, " NEXT > ", colors.black,
+    detailPage < pages and colors.lightBlue or colors.gray)
   local status = tostring(detailPage) .. "/" .. tostring(pages)
   writeAt(target, math.max(28, width - #status + 1), height, status, colors.lightGray, colors.black)
 end

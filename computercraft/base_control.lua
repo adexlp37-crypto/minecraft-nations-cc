@@ -1,6 +1,6 @@
 local configFile = ".base_control.cfg"
 local liveCacheFile = ".base_control_live.json"
-local version = "4"
+local version = "5"
 
 local defaultProxies = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
@@ -12,7 +12,7 @@ local validSides = { top=true, bottom=true, left=true, right=true, front=true, b
 
 local function defaultConfig()
   return {
-    configVersion = 4,
+    configVersion = 5,
     webhookUrl = "",
     roleIds = {
       ally="1525923176196866048",
@@ -31,9 +31,9 @@ local function defaultConfig()
     closeSignal = true,
     emergencyOpenSide = "",
     refreshSeconds = 6,
-    home = { minX=7110, maxX=7156, minY=50, maxY=120, minZ=-6459, maxZ=-6395 },
-    outer = { minX=6800, maxX=7500, minY=50, maxY=2000, minZ=-7000, maxZ=-6000 },
-    inner = { minX=7056, maxX=7156, minY=50, maxY=2000, minZ=-6440, maxZ=-6395 },
+    home = { minX=7110, maxX=7156, minY=-2048, maxY=2048, minZ=-6459, maxZ=-6395 },
+    outer = { minX=6800, maxX=7500, minY=-2048, maxY=2048, minZ=-7000, maxZ=-6000 },
+    inner = { minX=7056, maxX=7156, minY=-2048, maxY=2048, minZ=-6440, maxZ=-6395 },
     proxies = defaultProxies
   }
 end
@@ -92,6 +92,14 @@ local function loadConfig()
     config.configVersion = 4
     saveConfig(config)
   end
+  if tonumber(config.configVersion) < 5 then
+    for _, zoneName in ipairs({ "home", "outer", "inner" }) do
+      local zone = config[zoneName]
+      if type(zone) == "table" then zone.minY, zone.maxY = -2048, 2048 end
+    end
+    config.configVersion = 5
+    saveConfig(config)
+  end
   config.proxies = type(config.proxies) == "table" and config.proxies or defaultProxies
   return config
 end
@@ -123,13 +131,12 @@ end
 
 local function zoneSetup(label, zone)
   print("")
-  print(label .. " ZONE")
+  print(label .. " ZONE (ALL HEIGHTS)")
   zone.minX = numberPrompt("Minimum X", zone.minX)
   zone.maxX = numberPrompt("Maximum X", zone.maxX)
-  zone.minY = numberPrompt("Minimum Y", zone.minY)
-  zone.maxY = numberPrompt("Maximum Y", zone.maxY)
   zone.minZ = numberPrompt("Minimum Z", zone.minZ)
   zone.maxZ = numberPrompt("Maximum Z", zone.maxZ)
+  zone.minY, zone.maxY = -2048, 2048
 end
 
 local function setup()
@@ -287,10 +294,11 @@ end
 
 local function inZone(position, zone)
   if type(position) ~= "table" or type(zone) ~= "table" then return false end
-  local x, y, z = tonumber(position.x), tonumber(position.y), tonumber(position.z)
-  if not x or not y or not z then return false end
+  local x, z = tonumber(position.x), tonumber(position.z)
+  if not x or not z then return false end
+  -- Base columns intentionally cover the entire world height. Flying high or
+  -- entering a basement must not make a player leave the base horizontally.
   return x >= math.min(zone.minX, zone.maxX) and x <= math.max(zone.minX, zone.maxX) and
-    y >= math.min(zone.minY, zone.maxY) and y <= math.max(zone.minY, zone.maxY) and
     z >= math.min(zone.minZ, zone.maxZ) and z <= math.max(zone.minZ, zone.maxZ)
 end
 
