@@ -1,6 +1,7 @@
 local launchArgs = { ... }
 local localMode = tostring(launchArgs[1] or ""):lower() == "local"
 local localCacheFile = ".base_control_live.json"
+local baseConfigFile = ".base_control.cfg"
 
 local proxyUrls = {
   "https://script.google.com/macros/s/AKfycbx11MizOXaAJ-ScN7C0-7Tuo2mjEu-urxRAnNAASwkQSa9iTUTy50JPuq8pEnZDs0F4uw/exec",
@@ -10,7 +11,7 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "19"
+local dashboardVersion = "20"
 local playerRefreshSeconds = 4
 local teamRefreshSeconds = 300
 local animationSeconds = 0.5
@@ -98,6 +99,7 @@ local lastHubUpdate = 0
 local viewMode = "list"
 local awayPage = 1
 local onlinePage = 1
+local rolesPage = 1
 local selectedName, detailPage = nil, 1
 local rowTeams = {}
 local rowPlayers = {}
@@ -259,7 +261,8 @@ local function drawMainTabs(active)
     { mode="list", label="TEAMS", color=colors.cyan },
     { mode="map", label="MAP", color=colors.lime },
     { mode="away", label="AWAY", color=colors.orange },
-    { mode="online", label="ONLINE", color=colors.lightBlue }
+    { mode="online", label="ONLINE", color=colors.lightBlue },
+    { mode="roles", label="ROLES", color=colors.purple }
   }
   mainTabHits = {}
   for index, tabInfo in ipairs(tabs) do
@@ -277,7 +280,7 @@ local function selectMainTab(x)
   for _, hit in ipairs(mainTabHits) do
     if x >= hit.x1 and x <= hit.x2 then
       viewMode = hit.mode
-      page, awayPage, onlinePage = 1, 1, 1
+      page, awayPage, onlinePage, rolesPage = 1, 1, 1, 1
       playClick("open")
       return true
     end
@@ -691,6 +694,76 @@ local function drawOnlinePlayers()
   drawPageButtons(height - 1, onlinePage, pages)
 end
 
+local function assignedRoles()
+  if not fs.exists(baseConfigFile) then return {}, "NO BASE CONTROL CONFIG" end
+  local file = fs.open(baseConfigFile, "r")
+  if not file then return {}, "CANNOT READ ROLE CONFIG" end
+  local config = textutils.unserialize(file.readAll())
+  file.close()
+  if type(config) ~= "table" or type(config.groups) ~= "table" then
+    return {}, "INVALID ROLE CONFIG"
+  end
+  local entries, seen = {}, {}
+  local definitions = {
+    { key="member", label="MEMBER", color=colors.lime, order=1 },
+    { key="ally", label="ALLY", color=colors.lightBlue, order=2 },
+    { key="enemy", label="ENEMY", color=colors.red, order=3 }
+  }
+  for _, definition in ipairs(definitions) do
+    local group = type(config.groups[definition.key]) == "table" and
+      config.groups[definition.key] or {}
+    for key, value in pairs(group) do
+      local name = tostring(value or key)
+      local normalized = name:lower()
+      if name ~= "" and not seen[normalized] then
+        seen[normalized] = true
+        entries[#entries + 1] = {
+          name=name, role=definition.label, color=definition.color, order=definition.order
+        }
+      end
+    end
+  end
+  table.sort(entries, function(a, b)
+    if a.order ~= b.order then return a.order < b.order end
+    return a.name:lower() < b.name:lower()
+  end)
+  return entries
+end
+
+local function drawRoles()
+  local width, height = target.getSize()
+  drawHeader("NATIONS  /  ROLE ASSIGNMENTS", colors.purple)
+  rowTeams, mapCells = {}, {}
+  drawMainTabs("roles")
+  local entries, roleError = assignedRoles()
+  local online = {}
+  for _, player in ipairs(data and type(data.players) == "table" and data.players or {}) do
+    online[tostring(player.name or ""):lower()] = true
+  end
+  local rows = math.max(1, math.floor((height - 5) / 2))
+  local pages = math.max(1, math.ceil(#entries / rows))
+  rolesPage = math.max(1, math.min(rolesPage, pages))
+  local first = (rolesPage - 1) * rows + 1
+  writeAt(target, 2, 3, "SECURITY ROLE / PLAYER", colors.gray, colors.black)
+  if roleError then
+    writeAt(target, 2, 5, roleError, colors.orange, colors.black)
+    writeAt(target, 2, 7, "Run: base_control setup", colors.lightGray, colors.black)
+  elseif #entries == 0 then
+    writeAt(target, 2, 5, "NO ROLES ASSIGNED", colors.gray, colors.black)
+  end
+  for row = 1, rows do
+    local entry = entries[first + row - 1]
+    if not entry then break end
+    local y = 4 + (row - 1) * 2
+    local isOnline = online[entry.name:lower()] == true
+    writeAt(target, 2, y, entry.name, colors.white, colors.black)
+    writeAt(target, math.max(18, width - 8), y,
+      isOnline and "ONLINE" or "OFFLINE", isOnline and colors.lime or colors.gray, colors.black)
+    writeAt(target, 4, y + 1, "ROLE: " .. entry.role, entry.color, colors.black)
+  end
+  drawPageButtons(height - 1, rolesPage, pages)
+end
+
 local function drawDetails(team)
   local width, height = target.getSize()
   local teamColor = nearestColor(target, team.color)
@@ -843,6 +916,7 @@ draw = function()
   elseif viewMode == "map" then drawMap()
   elseif viewMode == "away" then drawAwayPlayers()
   elseif viewMode == "online" then drawOnlinePlayers()
+  elseif viewMode == "roles" then drawRoles()
   else drawRanking() end
 end
 
@@ -861,6 +935,8 @@ local function animate()
     drawAnimatedLine(2, colors.orange)
   elseif viewMode == "online" then
     drawAnimatedLine(2, colors.lightBlue)
+  elseif viewMode == "roles" then
+    drawAnimatedLine(2, colors.purple)
   else
     drawAnimatedLine(2, colors.cyan)
   end
@@ -1154,6 +1230,10 @@ local function handlePointer(clickX, clickY)
     selectedName = player.team and tostring(player.team) or nil
     detailPage = 1
     openPlayer(tostring(player.name))
+  elseif viewMode == "roles" and clickY == height - 1 and clickX <= 7 then
+    playClick("page"); rolesPage = rolesPage - 1
+  elseif viewMode == "roles" and clickY == height - 1 and clickX >= 8 and clickX <= 15 then
+    playClick("page"); rolesPage = rolesPage + 1
   elseif viewMode == "list" and clickY == height - 1 and clickX <= 7 then
     playClick("page"); page = page - 1
   elseif viewMode == "list" and clickY == height - 1 and clickX >= 8 and clickX <= 15 then
@@ -1210,6 +1290,7 @@ while true do
       if value == keys.m then viewMode = viewMode == "map" and "list" or "map"
       elseif value == keys.a then viewMode = viewMode == "away" and "list" or "away"
       elseif value == keys.o then viewMode = viewMode == "online" and "list" or "online"
+      elseif value == keys.g then viewMode = viewMode == "roles" and "list" or "roles"
       elseif viewMode == "away" and (value == keys.right or value == keys.pageDown or value == keys.down) then
         awayPage = awayPage + 1
       elseif viewMode == "away" and (value == keys.pageUp or value == keys.up) then
@@ -1218,7 +1299,11 @@ while true do
         onlinePage = onlinePage + 1
       elseif viewMode == "online" and (value == keys.pageUp or value == keys.up) then
         onlinePage = onlinePage - 1
-      elseif (viewMode == "map" or viewMode == "away" or viewMode == "online") and
+      elseif viewMode == "roles" and (value == keys.right or value == keys.pageDown or value == keys.down) then
+        rolesPage = rolesPage + 1
+      elseif viewMode == "roles" and (value == keys.pageUp or value == keys.up) then
+        rolesPage = rolesPage - 1
+      elseif (viewMode == "map" or viewMode == "away" or viewMode == "online" or viewMode == "roles") and
           (value == keys.left or value == keys.backspace) then viewMode = "list"
       elseif value == keys.right or value == keys.pageDown or value == keys.down then page = page + 1
       elseif value == keys.left or value == keys.pageUp or value == keys.up then page = page - 1
