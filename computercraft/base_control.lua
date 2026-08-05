@@ -295,13 +295,18 @@ local function inZone(position, zone)
 end
 
 local activeProxy = 1
+local lastForcedTeamRefresh = 0
+local teamRefreshMilliseconds = 5 * 60 * 1000
 local function fetchPlayers()
   local failures = {}
+  local now = os.epoch and os.epoch("utc") or math.floor(os.clock() * 1000)
+  local forceTeams = now - lastForcedTeamRefresh >= teamRefreshMilliseconds
   for offset = 0, #config.proxies - 1 do
     local index = (activeProxy + offset - 1) % #config.proxies + 1
     local proxy = config.proxies[index]
     local separator = proxy:find("?", 1, true) and "&" or "?"
-    local url = proxy .. separator .. "basecontrol=" ..
+    local url = proxy .. separator .. "mode=teams&" ..
+      (forceTeams and "refreshTeams=1&" or "") .. "basecontrol=" ..
       tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
     local ok, response, err = pcall(http.get, {
       url=url, redirect=true,
@@ -312,6 +317,7 @@ local function fetchPlayers()
       local payload = textutils.unserializeJSON(body)
       if type(payload) == "table" and type(payload.players) == "table" and not payload.error then
         activeProxy = index
+        if forceTeams then lastForcedTeamRefresh = now end
         return payload.players, nil, payload
       end
       failures[#failures + 1] = "G" .. index .. ": " ..

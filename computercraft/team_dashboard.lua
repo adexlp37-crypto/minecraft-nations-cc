@@ -10,9 +10,9 @@ local proxyUrls = {
 local proxyNames = { "G1", "G2", "G3" }
 local activeProxy = 1
 local profileApiUrl = "https://api.ashcon.app/mojang/v2/user/"
-local dashboardVersion = "18"
-local playerRefreshSeconds = 6
-local teamRefreshSeconds = 600
+local dashboardVersion = "19"
+local playerRefreshSeconds = 4
+local teamRefreshSeconds = 300
 local animationSeconds = 0.5
 local lastSeenFile = ".team_dashboard_last_seen"
 local earthBlocksPerDegree = 204.8
@@ -97,16 +97,21 @@ local lastPlayerUpdate = nil
 local lastHubUpdate = 0
 local viewMode = "list"
 local awayPage = 1
+local onlinePage = 1
 local selectedName, detailPage = nil, 1
 local rowTeams = {}
 local rowPlayers = {}
 local rowAwayPlayers = {}
+local rowOnlinePlayers = {}
+local mainTabHits = {}
 local mapCells = {}
 local selectedPlayerName, playerProfile, playerError = nil, nil, nil
 local profileCache = {}
 local lastSeen = {}
 local lastSeenSavedAt = 0
 local animationFrame = 0
+local awaySnapshotReady = false
+local previousAwayNames = {}
 local draw
 local requestProfile
 
@@ -180,6 +185,34 @@ local function playClick(kind)
   end
 end
 
+local function playAwayEntryAlert()
+  if not speaker then return end
+  pcall(speaker.playNote, "bit", 0.65, 5)
+  sleep(0.10)
+  pcall(speaker.playNote, "pling", 0.75, 10)
+  sleep(0.10)
+  pcall(speaker.playNote, "bell", 0.85, 15)
+end
+
+local function detectNewAwayPlayers(newData)
+  local current = {}
+  for _, player in ipairs(type(newData) == "table" and
+      type(newData.players) == "table" and newData.players or {}) do
+    if player.team and player.inOwnBase == false then
+      current[tostring(player.name or "?"):lower()] = true
+    end
+  end
+  local foundNew = false
+  if awaySnapshotReady then
+    for name in pairs(current) do
+      if not previousAwayNames[name] then foundNew = true; break end
+    end
+  end
+  previousAwayNames = current
+  awaySnapshotReady = true
+  if foundNew then playAwayEntryAlert() end
+end
+
 local function drawAnimatedLine(y, accent)
   local width = target.getSize()
   writeAt(target, 1, y, string.rep("-", width), colors.gray, colors.black)
@@ -192,12 +225,64 @@ local function drawAnimatedLine(y, accent)
   end
 end
 
-local function drawBackButton()
+local function drawBackButton(label)
+  local width, height = target.getSize()
   local backColors = { colors.gray, colors.cyan, colors.purple, colors.orange }
   local index = math.floor(animationFrame / 5) % #backColors + 1
   local background = backColors[index]
   local foreground = background == colors.gray and colors.white or colors.black
-  writeAt(target, 1, 1, "<  BACK  ", foreground, background)
+  local text = label or "<  BACK  "
+  writeAt(target, 1, height, (" " .. text .. " "):sub(1, math.min(width, #text + 2)),
+    foreground, background)
+end
+
+local function fillRow(x1, x2, y, background)
+  local width, height = target.getSize()
+  if y < 1 or y > height then return end
+  x1, x2 = math.max(1, x1), math.min(width, x2)
+  if x2 < x1 then return end
+  target.setCursorPos(x1, y)
+  target.setBackgroundColor(background)
+  target.write(string.rep(" ", x2 - x1 + 1))
+end
+
+local function centeredButton(x1, x2, y, label, foreground, background)
+  fillRow(x1, x2, y, background)
+  local text = tostring(label)
+  local x = x1 + math.max(0, math.floor((x2 - x1 + 1 - #text) / 2))
+  writeAt(target, x, y, text:sub(1, x2 - x1 + 1), foreground, background)
+end
+
+local function drawMainTabs(active)
+  local width, height = target.getSize()
+  local tabs = {
+    { mode="list", label="TEAMS", color=colors.cyan },
+    { mode="map", label="MAP", color=colors.lime },
+    { mode="away", label="AWAY", color=colors.orange },
+    { mode="online", label="ONLINE", color=colors.lightBlue }
+  }
+  mainTabHits = {}
+  for index, tabInfo in ipairs(tabs) do
+    local x1 = math.floor((index - 1) * width / #tabs) + 1
+    local x2 = math.floor(index * width / #tabs)
+    local selected = active == tabInfo.mode
+    centeredButton(x1, x2, height, tabInfo.label,
+      selected and colors.black or colors.white,
+      selected and tabInfo.color or colors.gray)
+    mainTabHits[#mainTabHits + 1] = { x1=x1, x2=x2, mode=tabInfo.mode }
+  end
+end
+
+local function selectMainTab(x)
+  for _, hit in ipairs(mainTabHits) do
+    if x >= hit.x1 and x <= hit.x2 then
+      viewMode = hit.mode
+      page, awayPage, onlinePage = 1, 1, 1
+      playClick("open")
+      return true
+    end
+  end
+  return false
 end
 
 local function drawPageButtons(y, current, total)
@@ -387,6 +472,7 @@ local function drawRanking()
   local width, height = target.getSize()
   drawHeader("NATIONS  /  LIVE RANKING", colors.cyan)
   rowTeams = {}
+  drawMainTabs("list")
 
   if not data then
     writeAt(target, 2, 4, "BLUEMAP CONNECTION ERROR", colors.red, colors.black)
@@ -395,7 +481,8 @@ local function drawRanking()
     return
   end
 
-  local rows = math.max(1, height - 5)
+  -- Two screen rows per team make every team a much larger touch target.
+  local rows = math.max(1, math.floor((height - 5) / 2))
   local pageCount = math.max(1, math.ceil(#data.teams / rows))
   page = math.max(1, math.min(page, pageCount))
   local first = (page - 1) * rows + 1
@@ -407,8 +494,9 @@ local function drawRanking()
     local rank = first + row - 1
     local team = data.teams[rank]
     if not team then break end
-    local y = row + 3
+    local y = 4 + (row - 1) * 2
     rowTeams[y] = team
+    rowTeams[y + 1] = team
     local teamColor = nearestColor(target, team.color)
     local onlineText = tostring(team.online or 0) .. "/" .. tostring(team.members or 0)
     local onlineX = math.max(14, width - 8)
@@ -420,14 +508,12 @@ local function drawRanking()
     writeAt(target, 6, y, tostring(team.name or "?"):sub(1, nameWidth), teamColor, colors.black)
     writeAt(target, onlineX, y, onlineText,
       (tonumber(team.online) or 0) > 0 and colors.lime or colors.gray, colors.black)
+    writeAt(target, 6, y + 1,
+      "BASE " .. tostring(team.atBase or 0) .. "  AWAY " .. tostring(team.away or 0),
+      (tonumber(team.away) or 0) > 0 and colors.orange or colors.lightGray, colors.black)
   end
 
-  drawPageButtons(height, page, pageCount)
-  if width >= 25 then writeAt(target, 18, height, " MAP > ", colors.black, colors.cyan) end
-  if width >= 35 then
-    writeAt(target, 26, height, " AWAY > ", colors.black,
-      #awayPlayers() > 0 and colors.orange or colors.gray)
-  end
+  drawPageButtons(height - 1, page, pageCount)
 end
 
 local function drawMap()
@@ -435,12 +521,12 @@ local function drawMap()
   drawHeader("NATIONS  /  BASE OVERVIEW", colors.lime)
   rowTeams = {}
   mapCells = {}
+  drawMainTabs("map")
 
   local bases = data and type(data.bases) == "table" and data.bases or {}
   if #bases == 0 then
     writeAt(target, 2, 5, "NO BASE DATA", colors.orange, colors.black)
     writeAt(target, 2, 7, "Deploy the new proxy code", colors.lightGray, colors.black)
-    writeAt(target, 1, height, "< LIST", colors.black, colors.cyan)
     return
   end
 
@@ -509,10 +595,7 @@ local function drawMap()
     totalAtBase = totalAtBase + (tonumber(team.atBase) or 0)
     totalOnline = totalOnline + (tonumber(team.online) or 0)
   end
-  writeAt(target, 1, height, "< LIST ", colors.black, colors.cyan)
-  writeAt(target, 9, height, " AWAY > ", colors.black,
-    #awayPlayers() > 0 and colors.orange or colors.gray)
-  writeAt(target, 19, height,
+  writeAt(target, 2, height - 1,
     "AT BASE " .. totalAtBase .. " / ONLINE " .. totalOnline, colors.lightGray, colors.black)
 end
 
@@ -522,8 +605,9 @@ local function drawAwayPlayers()
   rowTeams = {}
   mapCells = {}
   rowAwayPlayers = {}
+  drawMainTabs("away")
   local players = awayPlayers()
-  local rows = math.max(1, height - 6)
+  local rows = math.max(1, height - 7)
   local pages = math.max(1, math.ceil(#players / rows))
   awayPage = math.max(1, math.min(awayPage, pages))
   local first = (awayPage - 1) * rows + 1
@@ -560,12 +644,51 @@ local function drawAwayPlayers()
     end
   end
 
-  writeAt(target, 1, height, "< LIST ", colors.black, colors.cyan)
-  writeAt(target, 9, height, " MAP > ", colors.black, colors.lime)
-  writeAt(target, 18, height, "<", colors.white, awayPage > 1 and colors.gray or colors.black)
-  writeAt(target, 22, height, ">", colors.white, awayPage < pages and colors.gray or colors.black)
+  writeAt(target, 1, height - 1, "< PREV ", colors.white, awayPage > 1 and colors.gray or colors.black)
+  writeAt(target, 9, height - 1, " NEXT > ", colors.white, awayPage < pages and colors.gray or colors.black)
   local status = tostring(awayPage) .. "/" .. tostring(pages) .. "  " .. #players .. " AWAY"
-  writeAt(target, math.max(25, width - #status + 1), height, status, colors.orange, colors.black)
+  writeAt(target, math.max(18, width - #status + 1), height - 1, status, colors.orange, colors.black)
+end
+
+local function onlinePlayers()
+  local players = {}
+  for _, player in ipairs(data and type(data.players) == "table" and data.players or {}) do
+    players[#players + 1] = player
+  end
+  table.sort(players, function(a, b)
+    local at, bt = tostring(a.team or "~NO TEAM"):lower(), tostring(b.team or "~NO TEAM"):lower()
+    if at ~= bt then return at < bt end
+    return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+  end)
+  return players
+end
+
+local function drawOnlinePlayers()
+  local width, height = target.getSize()
+  drawHeader("NATIONS  /  ONLINE PLAYERS", colors.lightBlue)
+  rowTeams, mapCells, rowOnlinePlayers = {}, {}, {}
+  drawMainTabs("online")
+  local players = onlinePlayers()
+  local rows = math.max(1, math.floor((height - 5) / 2))
+  local pages = math.max(1, math.ceil(#players / rows))
+  onlinePage = math.max(1, math.min(onlinePage, pages))
+  local first = (onlinePage - 1) * rows + 1
+  writeAt(target, 2, 3, "PLAYER / TEAM", colors.gray, colors.black)
+  writeAt(target, math.max(18, width - 12), 3, "LOCATION", colors.gray, colors.black)
+  if #players == 0 then writeAt(target, 2, 5, "NO PLAYERS ONLINE", colors.gray, colors.black) end
+  for row = 1, rows do
+    local player = players[first + row - 1]
+    if not player then break end
+    local y = 4 + (row - 1) * 2
+    rowOnlinePlayers[y], rowOnlinePlayers[y + 1] = player, player
+    local team = teamByName(player.team)
+    local teamColor = team and nearestColor(target, team.color) or colors.gray
+    local location, locationColor = currentLocation(player, true)
+    writeAt(target, 2, y, tostring(player.name or "?"), colors.white, colors.black)
+    writeAt(target, math.max(18, width - 12), y, location, locationColor, colors.black)
+    writeAt(target, 4, y + 1, "TEAM: " .. tostring(player.team or "NO TEAM"), teamColor, colors.black)
+  end
+  drawPageButtons(height - 1, onlinePage, pages)
 end
 
 local function drawDetails(team)
@@ -574,8 +697,7 @@ local function drawDetails(team)
   rowPlayers = {}
   target.setBackgroundColor(colors.black)
   target.clear()
-  drawBackButton()
-  writeAt(target, 12, 1, "TEAM DETAILS", colors.white, colors.black)
+  writeAt(target, 2, 1, "TEAM DETAILS", colors.white, colors.black)
   drawAnimatedLine(2, teamColor)
   writeAt(target, 2, 3, tostring(team.name or "UNKNOWN"), teamColor, colors.black)
   writeAt(target, 2, 5,
@@ -634,7 +756,13 @@ local function drawDetails(team)
       memberStatus == "AWAY" and colors.orange or
         (isOnline and colors.lime or colors.gray), colors.black)
   end
-  drawPageButtons(height, detailPage, pages)
+  drawBackButton("< BACK")
+  writeAt(target, 11, height, "< PREV ", colors.white,
+    detailPage > 1 and colors.gray or colors.black)
+  writeAt(target, 19, height, " NEXT > ", colors.white,
+    detailPage < pages and colors.gray or colors.black)
+  local status = tostring(detailPage) .. "/" .. tostring(pages)
+  writeAt(target, math.max(28, width - #status + 1), height, status, colors.lightGray, colors.black)
 end
 
 local function drawPlayerProfile(team)
@@ -642,9 +770,9 @@ local function drawPlayerProfile(team)
   local teamColor = team and nearestColor(target, team.color) or colors.cyan
   target.setBackgroundColor(colors.black)
   target.clear()
-  drawBackButton()
-  writeAt(target, 12, 1, "PLAYER PROFILE", colors.white, colors.black)
+  writeAt(target, 2, 1, "PLAYER PROFILE", colors.white, colors.black)
   drawAnimatedLine(2, teamColor)
+  drawBackButton("< BACK TO TEAM")
   writeAt(target, 2, 3, selectedPlayerName or "UNKNOWN", teamColor, colors.black)
   writeAt(target, 2, 4, "ORIGIN     " .. tostring(team and team.name or "UNKNOWN"),
     teamColor, colors.black)
@@ -672,7 +800,7 @@ local function drawPlayerProfile(team)
   if playerError then
     writeAt(target, 2, 10, "PROFILE UNAVAILABLE", colors.red, colors.black)
     writeAt(target, 2, 12, playerError, colors.orange, colors.black)
-    writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
+    drawBackButton("< BACK TO TEAM")
     return
   end
 
@@ -705,7 +833,7 @@ local function drawPlayerProfile(team)
       end
     end
   end
-  writeAt(target, 1, height, "< BACK TO TEAM", colors.lightGray, colors.black)
+  drawBackButton("< BACK TO TEAM")
 end
 
 draw = function()
@@ -714,19 +842,25 @@ draw = function()
   elseif team then drawDetails(team)
   elseif viewMode == "map" then drawMap()
   elseif viewMode == "away" then drawAwayPlayers()
+  elseif viewMode == "online" then drawOnlinePlayers()
   else drawRanking() end
 end
 
 local function animate()
   animationFrame = animationFrame + 1
   local team = selectedTeam()
-  if team then
+  if selectedPlayerName then
+    drawBackButton("< BACK TO TEAM")
+    drawAnimatedLine(2, team and nearestColor(target, team.color) or colors.cyan)
+  elseif team then
     drawBackButton()
     drawAnimatedLine(2, nearestColor(target, team.color))
   elseif viewMode == "map" then
     drawAnimatedLine(2, colors.lime)
   elseif viewMode == "away" then
     drawAnimatedLine(2, colors.orange)
+  elseif viewMode == "online" then
+    drawAnimatedLine(2, colors.lightBlue)
   else
     drawAnimatedLine(2, colors.cyan)
   end
@@ -792,6 +926,7 @@ local function applyPlayers(players)
     end
   end
   sortTeams()
+  detectNewAwayPlayers(data)
   rememberOnlinePlayers(data)
 end
 
@@ -801,9 +936,9 @@ local function requestProxy(kind)
   local proxyUrl = proxyUrls[proxyIndex]
   local separator = proxyUrl:find("?", 1, true) and "&" or "?"
   local stamp = tostring(os.epoch and os.epoch("utc") or math.random(1, 999999))
-  local modeParameter = proxyUrl:find("workers.dev", 1, true) and
-    ("mode=" .. kind .. "&") or ""
-  local url = proxyUrl .. separator .. modeParameter .. "dashboard=" .. stamp
+  local modeParameter = "mode=" .. kind .. "&"
+  local refreshParameter = kind == "teams" and "refreshTeams=1&" or ""
+  local url = proxyUrl .. separator .. modeParameter .. refreshParameter .. "dashboard=" .. stamp
   local callOk, ok, err = pcall(http.request, {
     url=url,
     redirect=true,
@@ -903,6 +1038,7 @@ local function handleProxySuccess(url, response)
       data, lastError = payload, nil
       lastPlayerUpdate = os.epoch and os.epoch("utc") or nil
       sortTeams()
+      detectNewAwayPlayers(data)
       rememberOnlinePlayers(data)
     end
   elseif type(payload.players) == "table" then
@@ -960,6 +1096,7 @@ local function loadHubData()
     lastPlayerUpdate = updatedAt > 0 and updatedAt or (os.epoch and os.epoch("utc") or nil)
     activeProxy = tonumber(payload.hubProxy) or activeProxy
     sortTeams()
+    detectNewAwayPlayers(data)
     rememberOnlinePlayers(data)
   end
   local age = os.epoch and updatedAt > 0 and math.floor((os.epoch("utc") - updatedAt) / 1000) or 0
@@ -970,6 +1107,63 @@ end
 local function update()
   if localMode then loadHubData()
   else requestProxy("teams") end
+end
+
+local function handlePointer(clickX, clickY)
+  local _, height = target.getSize()
+  if selectedPlayerName then
+    if clickY == height then
+      playClick("back")
+      selectedPlayerName, playerProfile, playerError = nil, nil, nil
+    else playClick("page") end
+  elseif selectedName then
+    if clickY == height and clickX <= 9 then
+      playClick("back")
+      selectedName, detailPage = nil, 1
+    elseif rowPlayers[clickY] then
+      playClick("open")
+      openPlayer(rowPlayers[clickY])
+    elseif clickY == height and clickX >= 11 and clickX <= 17 then
+      playClick("page"); detailPage = detailPage - 1
+    elseif clickY == height and clickX >= 19 and clickX <= 26 then
+      playClick("page"); detailPage = detailPage + 1
+    else playClick("page") end
+  elseif clickY == height then
+    if not selectMainTab(clickX) then playClick("page") end
+  elseif viewMode == "map" and mapCells[clickY] and mapCells[clickY][clickX] then
+    playClick("open")
+    selectedName = tostring(mapCells[clickY][clickX].team)
+    detailPage = 1
+  elseif viewMode == "away" and clickY == height - 1 and clickX <= 7 then
+    playClick("page"); awayPage = awayPage - 1
+  elseif viewMode == "away" and clickY == height - 1 and clickX >= 9 and clickX <= 16 then
+    playClick("page"); awayPage = awayPage + 1
+  elseif viewMode == "away" and rowAwayPlayers[clickY] then
+    local player = rowAwayPlayers[clickY]
+    playClick("open")
+    selectedName = player.team and tostring(player.team) or nil
+    detailPage = 1
+    openPlayer(tostring(player.name))
+  elseif viewMode == "online" and clickY == height - 1 and clickX <= 7 then
+    playClick("page"); onlinePage = onlinePage - 1
+  elseif viewMode == "online" and clickY == height - 1 and clickX >= 8 and clickX <= 15 then
+    playClick("page"); onlinePage = onlinePage + 1
+  elseif viewMode == "online" and rowOnlinePlayers[clickY] then
+    local player = rowOnlinePlayers[clickY]
+    playClick("open")
+    selectedName = player.team and tostring(player.team) or nil
+    detailPage = 1
+    openPlayer(tostring(player.name))
+  elseif viewMode == "list" and clickY == height - 1 and clickX <= 7 then
+    playClick("page"); page = page - 1
+  elseif viewMode == "list" and clickY == height - 1 and clickX >= 8 and clickX <= 15 then
+    playClick("page"); page = page + 1
+  elseif rowTeams[clickY] then
+    playClick("open")
+    selectedName = tostring(rowTeams[clickY].name)
+    detailPage = 1
+  else playClick("page") end
+  draw()
 end
 
 lastError = localMode and "Waiting for Base Control data..." or "Loading live data..."
@@ -1015,11 +1209,16 @@ while true do
     else
       if value == keys.m then viewMode = viewMode == "map" and "list" or "map"
       elseif value == keys.a then viewMode = viewMode == "away" and "list" or "away"
+      elseif value == keys.o then viewMode = viewMode == "online" and "list" or "online"
       elseif viewMode == "away" and (value == keys.right or value == keys.pageDown or value == keys.down) then
         awayPage = awayPage + 1
       elseif viewMode == "away" and (value == keys.pageUp or value == keys.up) then
         awayPage = awayPage - 1
-      elseif (viewMode == "map" or viewMode == "away") and
+      elseif viewMode == "online" and (value == keys.right or value == keys.pageDown or value == keys.down) then
+        onlinePage = onlinePage + 1
+      elseif viewMode == "online" and (value == keys.pageUp or value == keys.up) then
+        onlinePage = onlinePage - 1
+      elseif (viewMode == "map" or viewMode == "away" or viewMode == "online") and
           (value == keys.left or value == keys.backspace) then viewMode = "list"
       elseif value == keys.right or value == keys.pageDown or value == keys.down then page = page + 1
       elseif value == keys.left or value == keys.pageUp or value == keys.up then page = page - 1
@@ -1027,152 +1226,8 @@ while true do
     end
     draw()
   elseif event == "monitor_touch" then
-    local touchX, touchY = x, y
-    local _, height = target.getSize()
-    if selectedPlayerName then
-      if (touchY == 1 and touchX <= 9) or touchY == height then
-        playClick("back")
-        selectedPlayerName, playerProfile, playerError = nil, nil, nil
-      else
-        playClick("page")
-      end
-    elseif selectedName then
-      if touchY == 1 and touchX <= 9 then
-        playClick("back")
-        selectedName, detailPage = nil, 1
-      elseif rowPlayers[touchY] then
-        playClick("open")
-        openPlayer(rowPlayers[touchY])
-      elseif touchY == height and touchX <= 7 then
-        playClick("page")
-        detailPage = detailPage - 1
-      elseif touchY == height and touchX >= 8 and touchX <= 15 then
-        playClick("page")
-        detailPage = detailPage + 1
-      else
-        playClick("page")
-      end
-    elseif viewMode == "map" and touchY == height and touchX <= 7 then
-      playClick("back")
-      viewMode = "list"
-    elseif viewMode == "map" and touchY == height and touchX >= 9 and touchX <= 16 then
-      playClick("open")
-      viewMode = "away"
-    elseif viewMode == "map" and mapCells[touchY] and mapCells[touchY][touchX] then
-      playClick("open")
-      selectedName = tostring(mapCells[touchY][touchX].team)
-      detailPage = 1
-    elseif viewMode == "away" and touchY == height and touchX <= 7 then
-      playClick("back")
-      viewMode = "list"
-    elseif viewMode == "away" and touchY == height and touchX >= 9 and touchX <= 15 then
-      playClick("open")
-      viewMode = "map"
-    elseif viewMode == "away" and touchY == height and touchX >= 18 and touchX <= 20 then
-      playClick("page")
-      awayPage = awayPage - 1
-    elseif viewMode == "away" and touchY == height and touchX >= 21 and touchX <= 23 then
-      playClick("page")
-      awayPage = awayPage + 1
-    elseif viewMode == "away" and rowAwayPlayers[touchY] then
-      local player = rowAwayPlayers[touchY]
-      playClick("open")
-      selectedName = tostring(player.team)
-      detailPage = 1
-      openPlayer(tostring(player.name))
-    elseif viewMode == "list" and touchY == height and touchX >= 18 and touchX <= 24 then
-      playClick("open")
-      viewMode = "map"
-    elseif viewMode == "list" and touchY == height and touchX >= 26 and touchX <= 34 then
-      playClick("open")
-      viewMode = "away"
-    elseif rowTeams[touchY] then
-      playClick("open")
-      selectedName = tostring(rowTeams[touchY].name)
-      detailPage = 1
-    elseif touchY == height and touchX <= 7 then
-      playClick("page")
-      page = page - 1
-    elseif touchY == height and touchX >= 8 and touchX <= 15 then
-      playClick("page")
-      page = page + 1
-    else
-      playClick("page")
-    end
-    draw()
+    handlePointer(x, y)
   elseif event == "mouse_click" then
-    local clickX, clickY = x, y
-    local _, height = target.getSize()
-    if selectedPlayerName then
-      if (clickY == 1 and clickX <= 9) or clickY == height then
-        playClick("back")
-        selectedPlayerName, playerProfile, playerError = nil, nil, nil
-      else
-        playClick("page")
-      end
-    elseif selectedName then
-      if clickY == 1 and clickX <= 9 then
-        playClick("back")
-        selectedName, detailPage = nil, 1
-      elseif rowPlayers[clickY] then
-        playClick("open")
-        openPlayer(rowPlayers[clickY])
-      elseif clickY == height and clickX <= 7 then
-        playClick("page")
-        detailPage = detailPage - 1
-      elseif clickY == height and clickX >= 8 and clickX <= 15 then
-        playClick("page")
-        detailPage = detailPage + 1
-      else
-        playClick("page")
-      end
-    elseif viewMode == "map" and clickY == height and clickX <= 7 then
-      playClick("back")
-      viewMode = "list"
-    elseif viewMode == "map" and clickY == height and clickX >= 9 and clickX <= 16 then
-      playClick("open")
-      viewMode = "away"
-    elseif viewMode == "map" and mapCells[clickY] and mapCells[clickY][clickX] then
-      playClick("open")
-      selectedName = tostring(mapCells[clickY][clickX].team)
-      detailPage = 1
-    elseif viewMode == "away" and clickY == height and clickX <= 7 then
-      playClick("back")
-      viewMode = "list"
-    elseif viewMode == "away" and clickY == height and clickX >= 9 and clickX <= 15 then
-      playClick("open")
-      viewMode = "map"
-    elseif viewMode == "away" and clickY == height and clickX >= 18 and clickX <= 20 then
-      playClick("page")
-      awayPage = awayPage - 1
-    elseif viewMode == "away" and clickY == height and clickX >= 21 and clickX <= 23 then
-      playClick("page")
-      awayPage = awayPage + 1
-    elseif viewMode == "away" and rowAwayPlayers[clickY] then
-      local player = rowAwayPlayers[clickY]
-      playClick("open")
-      selectedName = tostring(player.team)
-      detailPage = 1
-      openPlayer(tostring(player.name))
-    elseif viewMode == "list" and clickY == height and clickX >= 18 and clickX <= 24 then
-      playClick("open")
-      viewMode = "map"
-    elseif viewMode == "list" and clickY == height and clickX >= 26 and clickX <= 34 then
-      playClick("open")
-      viewMode = "away"
-    elseif rowTeams[clickY] then
-      playClick("open")
-      selectedName = tostring(rowTeams[clickY].name)
-      detailPage = 1
-    elseif clickY == height and clickX <= 7 then
-      playClick("page")
-      page = page - 1
-    elseif clickY == height and clickX >= 8 and clickX <= 15 then
-      playClick("page")
-      page = page + 1
-    else
-      playClick("page")
-    end
-    draw()
+    handlePointer(x, y)
   end
 end
